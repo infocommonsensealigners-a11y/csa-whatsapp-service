@@ -1,0 +1,10 @@
+# Datos de runtime: sesión Baileys, SQLite, media y avatares.
+# Contienen conversaciones reales (posibles datos de salud) — NUNCA versionar.
+data/
+
+# Secretos y entorno
+.env
+.env.*
+
+node_modules/
+*.log

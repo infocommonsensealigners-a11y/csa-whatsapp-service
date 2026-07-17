@@ -1,0 +1,30 @@
+{
+  "name": "whatsapp-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sidecar READ-ONLY de WhatsApp (Baileys) para el Dashboard CSA. Nunca envía mensajes.",
+  "scripts": {
+    "dev": "tsx --env-file=.env watch src/index.ts",
+    "start": "tsx --env-file=.env src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "check:nosend": "tsx scripts/check-nosend.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.212",
+    "@supabase/supabase-js": "^2.110.7",
+    "baileys": "^6.7.18",
+    "better-sqlite3": "^12.4.1",
+    "fastify": "^5.6.2",
+    "googleapis": "^173.0.0",
+    "pino": "^9.14.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.10.9",
+    "@types/qrcode": "^1.5.6",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3"
+  }
+}

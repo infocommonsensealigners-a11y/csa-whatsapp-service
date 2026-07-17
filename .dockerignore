@@ -1,0 +1,9 @@
+# NUNCA meter en la imagen: secretos, datos reales, node_modules locales, git.
+node_modules
+.env
+.env.*
+data
+.git
+.gitignore
+*.log
+npm-debug.log

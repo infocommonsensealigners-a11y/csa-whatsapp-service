@@ -26,7 +26,9 @@ async function main(): Promise<void> {
 
   // WA_CONNECT=off → modo solo-lectura: sirve intel/agenda/histórico desde
   // Supabase/SQLite SIN abrir Baileys (deploy sin tocar el emparejamiento en uso).
-  if (process.env.WA_CONNECT !== "off") {
+  // Tolerante a mayúsculas/espacios para que un valor tipo "Off " no lo active.
+  const wantConnect = (process.env.WA_CONNECT ?? "").trim().toLowerCase() !== "off";
+  if (wantConnect) {
     await startWhatsapp();
   } else {
     console.log("[wa] WA_CONNECT=off → Baileys NO se conecta (modo solo lectura).");
@@ -45,6 +47,15 @@ function shutdown(): void {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// Resiliencia en producción: un error async suelto (Baileys, tarea de fondo…) NO
+// debe tumbar el proceso — el servidor HTTP sigue sirviendo intel/agenda/calendar.
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err);
+});
 
 main().catch((err) => {
   console.error("[fatal] El sidecar no pudo arrancar:", err);

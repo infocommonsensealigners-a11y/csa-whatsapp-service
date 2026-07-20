@@ -127,6 +127,23 @@ export function registerIntelRoutes(app: FastifyInstance): void {
     return { phone, found: items.length > 0, items };
   });
 
+  // El Playbook: síntesis IA de argumentos/objeciones/método (la genera
+  // scripts/playbook-insights.ts y se guarda en fransua_log).
+  app.get("/intel/playbook-insights", async (_req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from("fransua_log")
+      .select("payload,created_at")
+      .eq("kind", "playbook_insights")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) return reply.status(502).send({ ok: false, error: error.message });
+    if (!data) return { found: false };
+    return { found: true, storedAt: data.created_at, ...(data.payload as Record<string, unknown>) };
+  });
+
   app.get("/intel/:jid", async (req, reply) => {
     if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
     const jid = decodeURIComponent((req.params as any).jid);

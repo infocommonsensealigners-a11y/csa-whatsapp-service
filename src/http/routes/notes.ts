@@ -220,10 +220,10 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const sb = getSupabase();
     const { data, error } = await sb
       .from("fransua_log")
-      .select("payload,source_row,created_at")
-      .eq("kind", "human_note")
+      .select("kind,payload,source_row,created_at")
+      .in("kind", ["human_note", "event"])
       .order("created_at", { ascending: false })
-      .limit(300);
+      .limit(400);
     if (error) return reply.status(502).send({ ok: false, error: error.message });
     const timeline = (data ?? [])
       .filter((r: any) => {
@@ -234,10 +234,23 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       })
       .map((r: any) => {
         const p = r.payload || {};
+        if (r.kind === "event") {
+          return {
+            at: p.at ?? r.created_at,
+            author: p.author ?? "Sistema",
+            text: p.text ?? "",
+            tipo: "evento" as const,
+            understood: null,
+            hechos: [],
+            applied: [],
+            proposed: [],
+          };
+        }
         return {
           at: p.at ?? r.created_at,
           author: p.author ?? "Fran",
           text: p.text ?? "",
+          tipo: "nota" as const,
           understood: p.interpretation?.entendido ?? null,
           hechos: p.interpretation?.hechos ?? [],
           applied: p.applied ?? [],
@@ -245,6 +258,33 @@ export function registerNoteRoutes(app: FastifyInstance): void {
         };
       });
     return { found: timeline.length > 0, timeline };
+  });
+
+  // EVENTO del lead (p.ej. cambio de estado desde el dashboard) → memoria de
+  // Fransua. Así el cambio queda registrado y visible en el timeline del lead
+  // ("cerrar el círculo"). El dashboard lo llama tras un set-estado con éxito.
+  app.post("/intel/event", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const body = (req.body ?? {}) as NoteBody & { evento?: string };
+    const text = String(body.text ?? "").trim();
+    if (!text) return reply.status(400).send({ ok: false, error: "text vacío" });
+    const sb = getSupabase();
+    const sourceRow = Number.isFinite(body.sourceRow) ? Number(body.sourceRow) : null;
+    const { error } = await sb.from("fransua_log").insert({
+      kind: "event",
+      source_row: sourceRow,
+      payload: {
+        at: new Date().toISOString(),
+        author: body.author || "Sistema",
+        evento: body.evento || "estado",
+        text,
+        phone: canonPhone(body.phone) || null,
+        jid: body.jid ?? null,
+        name: body.name ?? null,
+      },
+    });
+    if (error) return reply.status(502).send({ ok: false, error: error.message });
+    return { ok: true };
   });
 
   // CHAT con Fransua sobre la cartera: Fran pregunta ("¿a quién llamo hoy?",

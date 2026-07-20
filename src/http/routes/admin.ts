@@ -145,3 +145,5 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     return { ok: true, inserted: { chats: ic, messages: im, links: il }, counts: statusCounts() };
   });
 }
+
+// (histórico migrado 2026-07-20; endpoint de ingesta puntual, retirable)

@@ -22,6 +22,13 @@ function avatarFile(jid: string): string {
 }
 
 async function ensureAvatar(jid: string): Promise<string | null> {
+  // Foto ya presente en el volumen (migrada/subida): sírvela directamente por su
+  // nombre determinista, sin depender del avatar_path de la BD (que tras una
+  // migración puede apuntar a rutas locales antiguas). Esto hace que los avatares
+  // subidos al volumen /data/avatars se vean aunque Baileys esté apagado.
+  const localFile = avatarFile(jid);
+  if (fs.existsSync(localFile)) return localFile;
+
   const db = getDb();
   const row = db
     .prepare("SELECT avatar_path, avatar_fetched_at FROM chats WHERE jid = ?")

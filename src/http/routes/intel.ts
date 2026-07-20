@@ -12,6 +12,8 @@
  */
 import type { FastifyInstance } from "fastify";
 import { brainConfigured, getSupabase } from "../../brain/supabase";
+import { getDb } from "../../db/db";
+import { runText, suggestModel } from "../../ai/agent";
 
 const STRATEGY_SINCE = "2025-04-01";
 const COLS =
@@ -142,6 +144,65 @@ export function registerIntelRoutes(app: FastifyInstance): void {
     if (error) return reply.status(502).send({ ok: false, error: error.message });
     if (!data) return { found: false };
     return { found: true, storedAt: data.created_at, ...(data.payload as Record<string, unknown>) };
+  });
+
+  // Sugerencia de mensaje: Fransua redacta el SIGUIENTE mensaje que Fran debería
+  // enviar, a partir de la conversación (sqlite) + el contexto (chat_intel). Usa
+  // Claude vía la suscripción (ai/agent runText). On-demand (botón en la UI).
+  app.get("/intel/suggest/:jid", async (req, reply) => {
+    const jid = decodeURIComponent((req.params as any).jid);
+    const db = getDb();
+    const chat = db.prepare("SELECT jid, phone, display_name FROM chats WHERE jid = ?").get(jid) as
+      | { jid: string; phone: string | null; display_name: string | null }
+      | undefined;
+    if (!chat) return reply.status(404).send({ ok: false, error: "chat no encontrado" });
+
+    const rows = db
+      .prepare(
+        "SELECT from_me, text FROM messages WHERE chat_jid = ? AND text IS NOT NULL AND text <> '' ORDER BY ts DESC LIMIT 24"
+      )
+      .all(jid) as { from_me: number; text: string }[];
+    if (rows.length === 0) return reply.status(422).send({ ok: false, error: "sin mensajes de texto en esta conversación" });
+    const transcript = rows
+      .reverse()
+      .map((m) => `${m.from_me ? "Fran" : chat.display_name || "Lead"}: ${m.text}`)
+      .join("\n");
+
+    let resumen: string | null = null;
+    let temperatura: string | null = null;
+    if (brainConfigured()) {
+      const sb = getSupabase();
+      let q = await sb.from("chat_intel").select("resumen,temperatura").eq("jid", jid).maybeSingle();
+      let row = q.data as { resumen: string | null; temperatura: string | null } | null;
+      if (!row && chat.phone) {
+        const r = await sb
+          .from("chat_intel")
+          .select("resumen,temperatura")
+          .eq("phone", chat.phone)
+          .order("last_ts", { ascending: false })
+          .limit(1);
+        row = (r.data?.[0] as any) ?? null;
+      }
+      resumen = row?.resumen ?? null;
+      temperatura = row?.temperatura ?? null;
+    }
+
+    const prompt = `Eres Fransua, el asistente del comercial de Common Sense Aligners (CSA). CSA vende FORMACIÓN a dentistas (programa SBA — Sistema de Biomecánica Avanzada); NO es una clínica y los leads son profesionales de la odontología.
+
+Conversación de WhatsApp entre Fran (el comercial) y ${chat.display_name || "el lead"} (de más antiguo a más reciente):
+---
+${transcript}
+---
+${resumen ? `Resumen previo del lead: ${resumen}\nTemperatura: ${temperatura ?? "?"}\n` : ""}
+Redacta EL SIGUIENTE mensaje que Fran debería enviarle por WhatsApp para hacer avanzar la relación/venta de forma natural. Requisitos: español de España, tono cercano y profesional, sin sonar a plantilla, 1-3 frases, listo para copiar y pegar. Responde ÚNICAMENTE con el texto del mensaje (sin comillas, sin explicaciones, sin firma).`;
+
+    try {
+      const suggestion = (await runText(prompt, suggestModel)).replace(/^["']|["']$/g, "").trim();
+      if (!suggestion) return reply.status(503).send({ ok: false, error: "IA no disponible ahora mismo." });
+      return { ok: true, jid, suggestion };
+    } catch (e) {
+      return reply.status(503).send({ ok: false, error: "IA no disponible: " + (e as Error).message });
+    }
   });
 
   app.get("/intel/:jid", async (req, reply) => {

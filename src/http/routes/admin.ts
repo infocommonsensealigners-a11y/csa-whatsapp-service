@@ -15,7 +15,10 @@
  * links, que referencian chats(jid).
  */
 import type { FastifyInstance } from "fastify";
+import fs from "node:fs";
+import path from "node:path";
 import { getDb, statusCounts } from "../../db/db";
+import { config } from "../../config";
 
 const TOKEN = (process.env.WA_ADMIN_TOKEN ?? "csa-migrate-2026").trim();
 
@@ -143,6 +146,30 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     }
 
     return { ok: true, inserted: { chats: ic, messages: im, links: il }, counts: statusCounts() };
+  });
+
+  // Subida de AVATARES al volumen (migración puntual, mismo token). Los ficheros
+  // llegan en base64 por lotes (el proxy del dashboard no deja usar SSH/railway
+  // files). Se escriben en config.avatarsDir con el nombre determinista
+  // <jid_con__>.jpg que espera la ruta /avatars/:jid.
+  app.post("/admin/upload-avatars", async (request, reply) => {
+    const body = request.body as { token?: string; files?: { name: string; b64: string }[] } | null;
+    if (String(body?.token ?? "") !== TOKEN) {
+      return reply.status(401).send({ ok: false, error: "token inválido" });
+    }
+    fs.mkdirSync(config.avatarsDir, { recursive: true });
+    let written = 0;
+    for (const f of body?.files ?? []) {
+      const safe = path.basename(String(f?.name ?? ""));
+      if (!/^[a-zA-Z0-9_.-]+\.jpg$/.test(safe) || typeof f?.b64 !== "string") continue;
+      try {
+        fs.writeFileSync(path.join(config.avatarsDir, safe), Buffer.from(f.b64, "base64"));
+        written++;
+      } catch {
+        /* ignora fichero suelto que falle */
+      }
+    }
+    return { ok: true, written };
   });
 }
 

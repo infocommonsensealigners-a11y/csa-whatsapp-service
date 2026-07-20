@@ -22,7 +22,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { brainConfigured, getSupabase } from "../../brain/supabase";
-import { runJson, suggestModel } from "../../ai/agent";
+import { runJson, runText, suggestModel } from "../../ai/agent";
 
 type NoteBody = {
   phone?: string;
@@ -245,6 +245,75 @@ export function registerNoteRoutes(app: FastifyInstance): void {
         };
       });
     return { found: timeline.length > 0, timeline };
+  });
+
+  // CHAT con Fransua sobre la cartera: Fran pregunta ("¿a quién llamo hoy?",
+  // "¿qué objeciones aparecen?", "resúmeme a X") y Fransua responde cruzando la
+  // inteligencia de las conversaciones (chat_intel). Un turno; el historial se
+  // reenvía en cada llamada para dar continuidad.
+  app.post("/intel/ask", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const body = (req.body ?? {}) as { question?: string; history?: Array<{ role: string; content: string }> };
+    const question = String(body.question ?? "").trim();
+    if (!question) return reply.status(400).send({ ok: false, error: "question vacía" });
+
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from("chat_intel")
+      .select("display_name,producto,temperatura,resumen,intereses,etiquetas,last_ts,intervalos")
+      .order("last_ts", { ascending: false })
+      .limit(2000);
+    if (error) return reply.status(502).send({ ok: false, error: error.message });
+
+    const now = Math.floor(Date.now() / 1000);
+    const rank = (t: string | null) => (t === "caliente" ? 3 : t === "templado" ? 2 : t === "frio" ? 1 : 0);
+    const rows = (data ?? []) as any[];
+    // Prioriza leads con SEÑAL (temperatura o resumen), por temperatura y recencia.
+    const withSignal = rows
+      .filter((r) => r.temperatura || r.resumen)
+      .sort((a, b) => rank(b.temperatura) - rank(a.temperatura) || (b.last_ts ?? 0) - (a.last_ts ?? 0));
+    const CAP = 450;
+    const shown = withSignal.slice(0, CAP);
+    const lines = shown.map((r) => {
+      const sil = r.last_ts ? Math.round((now - r.last_ts) / 86400) : "?";
+      const esperando = r.intervalos?.ultimo_emisor === "lead" ? " · ESPERANDO-RESP" : "";
+      const intereses = Array.isArray(r.intereses) ? r.intereses.map((x: any) => x?.label ?? x).filter(Boolean).slice(0, 3).join("/") : "";
+      const resumen = (r.resumen ?? "").replace(/\s+/g, " ").slice(0, 110);
+      return `- ${r.display_name ?? "?"} · ${r.temperatura ?? "?"} · ${r.producto ?? "?"} · ${sil}d${esperando}${intereses ? ` · int:${intereses}` : ""}${resumen ? ` · ${resumen}` : ""}`;
+    });
+
+    const hist = (body.history ?? [])
+      .slice(-6)
+      .map((m) => `${m.role === "assistant" ? "Fransua" : "Fran"}: ${String(m.content).slice(0, 800)}`)
+      .join("\n");
+
+    const prompt = [
+      "Eres Fransua, el cerebro comercial de Common Sense Aligners (CSA), que VENDE FORMACIÓN a",
+      "dentistas (programa SBA, certificación, mentoría, estancia clínica) — NO trata pacientes.",
+      "Fran, el comercial, te pregunta sobre su cartera. Responde en ESPAÑOL, concreto y accionable,",
+      "basándote SOLO en los datos de abajo. Si te piden a quién llamar/priorizar, da NOMBRES concretos",
+      "y el porqué (temperatura, silencio, si espera respuesta). Si un dato no está, dilo con franqueza.",
+      "Sé breve por defecto; amplía solo si lo piden.",
+      "",
+      `=== CARTERA (hoy · ${shown.length}${withSignal.length > CAP ? ` de ${withSignal.length}` : ""} leads con conversación analizada) ===`,
+      "Formato: nombre · temperatura · producto · días de silencio · [ESPERANDO-RESP] · intereses · resumen",
+      lines.join("\n"),
+      withSignal.length > CAP ? `(…y ${withSignal.length - CAP} leads más con menos señal, no listados)` : "",
+      "",
+      hist ? "=== CONVERSACIÓN PREVIA ===\n" + hist : "",
+      "",
+      `Fran: ${question}`,
+      "Fransua:",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    try {
+      const answer = await runText(prompt, suggestModel);
+      return { ok: true, answer: answer || "(sin respuesta)", leadsConsiderados: shown.length };
+    } catch (e) {
+      return reply.status(502).send({ ok: false, error: "IA no disponible", message: (e as Error).message });
+    }
   });
 
   // Confirmar una propuesta. De momento crea el RECORDATORIO en Supabase (el

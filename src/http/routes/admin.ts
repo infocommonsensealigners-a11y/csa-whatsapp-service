@@ -5,9 +5,11 @@
  * lotes a través del proxy PÚBLICO autenticado del dashboard (/api/whatsapp/*).
  *
  * SEGURIDAD: solo se llega aquí vía el proxy (que exige sesión del dashboard) y
- * la red privada de Railway; además exige la cabecera `x-wa-admin` = WA_ADMIN_TOKEN
- * (o el fallback). READ-ONLY respecto a WhatsApp: solo escribe en el sqlite, no
- * envía nada. Endpoint pensado para migración puntual (se puede retirar después).
+ * la red privada de Railway; además exige el token `WA_ADMIN_TOKEN` (o el
+ * fallback), que se pasa en el CUERPO (`token`) o en query (`?t=`) — NO en
+ * cabecera, porque el proxy del dashboard descarta cabeceras personalizadas.
+ * READ-ONLY respecto a WhatsApp: solo escribe en el sqlite, no envía nada.
+ * Endpoint pensado para migración puntual (se puede retirar después).
  *
  * Orden importante (foreign_keys=ON): el driver manda CHATS antes que messages y
  * links, que referencian chats(jid).
@@ -55,10 +57,19 @@ type LinkRow = {
 
 export function registerAdminRoutes(app: FastifyInstance): void {
   app.post("/admin/ingest", async (request, reply) => {
-    if (String(request.headers["x-wa-admin"] ?? "") !== TOKEN) {
+    const body = request.body as {
+      token?: string;
+      chats?: ChatRow[];
+      messages?: MsgRow[];
+      links?: LinkRow[];
+    } | null;
+    const q = request.query as { t?: string } | undefined;
+    // El token va en el cuerpo o en query (el proxy descarta cabeceras custom);
+    // se acepta también la cabecera por si se llama directo al sidecar.
+    const provided = String(body?.token ?? q?.t ?? request.headers["x-wa-admin"] ?? "");
+    if (provided !== TOKEN) {
       return reply.status(401).send({ ok: false, error: "token inválido" });
     }
-    const body = request.body as { chats?: ChatRow[]; messages?: MsgRow[]; links?: LinkRow[] } | null;
     const db = getDb();
     const now = Math.floor(Date.now() / 1000);
 

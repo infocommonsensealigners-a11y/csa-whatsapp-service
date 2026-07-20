@@ -55,8 +55,9 @@ async function login(): Promise<string> {
 async function post(cookie: string, payload: object): Promise<{ inserted?: { chats: number; messages: number; links: number }; counts?: unknown }> {
   const res = await fetch(`${PROD_URL}/api/whatsapp/admin/ingest`, {
     method: "POST",
-    headers: { "content-type": "application/json", cookie, "x-wa-admin": TOKEN },
-    body: JSON.stringify(payload),
+    // El token va en el CUERPO: el proxy del dashboard descarta cabeceras custom.
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ token: TOKEN, ...payload }),
   });
   const j = (await res.json().catch(() => ({}))) as any;
   if (!res.ok || j?.ok === false) throw new Error(`ingest falló: HTTP ${res.status} ${JSON.stringify(j).slice(0, 200)}`);
@@ -107,6 +108,7 @@ async function main() {
 
   console.log(`\n✅ Migración terminada. Insertados NUEVOS: ${tot.chats} chats · ${tot.messages} messages · ${tot.links} links.`);
   console.log("(Los ya existentes se ignoran — reanudable/idempotente.)");
+  db.close();
 }
 
 main().catch((e) => {

@@ -206,6 +206,47 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     };
   });
 
+  // MEMORIA por lead: timeline de notas humanas + lo que Fransua entendió/aplicó.
+  // Resuelve por teléfono canónico (estable) o por source_row. Alimenta la
+  // sección "Memoria de Fransua" en la ficha del lead.
+  app.get("/intel/memory", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const q = req.query as any;
+    const phone = canonPhone(q?.phone);
+    const sourceRow = Number(q?.sourceRow);
+    if (!phone && !Number.isFinite(sourceRow)) {
+      return reply.status(400).send({ ok: false, error: "phone o sourceRow requerido" });
+    }
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from("fransua_log")
+      .select("payload,source_row,created_at")
+      .eq("kind", "human_note")
+      .order("created_at", { ascending: false })
+      .limit(300);
+    if (error) return reply.status(502).send({ ok: false, error: error.message });
+    const timeline = (data ?? [])
+      .filter((r: any) => {
+        const p = r.payload || {};
+        if (phone && canonPhone(p.phone) === phone) return true;
+        if (Number.isFinite(sourceRow) && (r.source_row === sourceRow || p.source_row === sourceRow)) return true;
+        return false;
+      })
+      .map((r: any) => {
+        const p = r.payload || {};
+        return {
+          at: p.at ?? r.created_at,
+          author: p.author ?? "Fran",
+          text: p.text ?? "",
+          understood: p.interpretation?.entendido ?? null,
+          hechos: p.interpretation?.hechos ?? [],
+          applied: p.applied ?? [],
+          proposed: (p.proposed ?? []).map((x: any) => x?.label ?? x?.type).filter(Boolean),
+        };
+      });
+    return { found: timeline.length > 0, timeline };
+  });
+
   // Confirmar una propuesta. De momento crea el RECORDATORIO en Supabase (el
   // cambio de estado lo aplica el dashboard vía /api/crm/set-estado, que es
   // quien tiene las credenciales del Sheet).

@@ -12,6 +12,7 @@ import { registerEventRoutes } from "./routes/events";
 import { registerBackfillRoutes } from "./routes/backfill";
 import { registerImportRoutes } from "./routes/import";
 import { registerIntelRoutes } from "./routes/intel";
+import { registerNoteRoutes } from "./routes/notes";
 import { registerCalendarRoutes } from "./routes/calendar";
 
 export async function startHttpServer(): Promise<FastifyInstance> {
@@ -25,6 +26,7 @@ export async function startHttpServer(): Promise<FastifyInstance> {
   registerBackfillRoutes(app);
   registerImportRoutes(app);
   registerIntelRoutes(app);
+  registerNoteRoutes(app);
   registerCalendarRoutes(app);
   // Pendiente F1: media de mensajes + links/matcher. F2: tags/artifacts/jobs.
 

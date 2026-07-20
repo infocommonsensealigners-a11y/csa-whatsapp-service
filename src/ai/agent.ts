@@ -5,9 +5,15 @@
  */
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config";
+import { ensureClaudeAuth } from "../brain/secrets";
 
 /** Ejecuta un prompt de un turno y devuelve el texto final del modelo. */
 export async function runText(prompt: string, model?: string): Promise<string> {
+  // Asegura la credencial de Claude (token de suscripción desde Supabase si no
+  // está en el entorno) ANTES de lanzar el query: el subproceso del SDK hereda
+  // process.env al arrancar. Sin credencial, el SDK fallará y el llamante lo
+  // gestiona (la nota se guarda igual, aiAvailable:false).
+  await ensureClaudeAuth();
   const q = query({
     prompt,
     options: {

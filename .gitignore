@@ -5,6 +5,7 @@ data/
 # Secretos y entorno
 .env
 .env.*
+.secrets/
 
 node_modules/
 *.log

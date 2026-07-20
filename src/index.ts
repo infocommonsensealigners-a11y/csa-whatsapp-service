@@ -8,11 +8,26 @@ import { startHttpServer } from "./http/server";
 import { emitSse } from "./http/sse";
 import { registerIngest } from "./wa/ingest";
 import { startWhatsapp, stopWhatsapp, onStateChange } from "./wa/socket";
+import { ensureClaudeAuth } from "./brain/secrets";
 
 async function main(): Promise<void> {
   ensureDataDirs();
   openDb();
   registerIngest();
+
+  // Credencial de Claude para Fransua: si no hay token/API key en el entorno,
+  // intenta cargar el token de SUSCRIPCIÓN desde Supabase (gratis, sin coste de
+  // API). Así el sidecar de Railway interpreta sin tocar sus variables a mano.
+  try {
+    const aiReady = await ensureClaudeAuth();
+    console.log(
+      aiReady
+        ? "[ai] Credencial de Claude lista → Fransua interpreta notas."
+        : "[ai] Sin credencial de Claude → Fransua guarda notas pero NO interpreta (pon el token de suscripción: scripts/set-oauth-token.ts)."
+    );
+  } catch (e) {
+    console.error("[ai] Error comprobando credencial de Claude:", (e as Error).message);
+  }
 
   onStateChange((state) => {
     emitSse({ type: "connection", state });

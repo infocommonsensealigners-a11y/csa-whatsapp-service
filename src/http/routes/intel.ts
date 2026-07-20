@@ -113,6 +113,20 @@ export function registerIntelRoutes(app: FastifyInstance): void {
     return { sourceRow, found: items.length > 0, items };
   });
 
+  // Resolución ESTABLE por teléfono. El source_row es la fila del Google Sheet y
+  // se desplaza cuando se editan filas; el teléfono canónico (9 díg) NO. La ficha
+  // y el panel deben resolver por aquí para no mostrar el lead equivocado.
+  app.get("/intel/by-phone/:phone", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const phone = String((req.params as any).phone).replace(/\D/g, "").slice(-9);
+    if (phone.length < 9) return reply.status(400).send({ ok: false, error: "phone inválido" });
+    const sb = getSupabase();
+    const { data, error } = await sb.from("chat_intel").select(COLS).eq("phone", phone).order("last_ts", { ascending: false });
+    if (error) return reply.status(502).send({ ok: false, error: error.message });
+    const items = (data as IntelRow[]).map(enrich);
+    return { phone, found: items.length > 0, items };
+  });
+
   app.get("/intel/:jid", async (req, reply) => {
     if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
     const jid = decodeURIComponent((req.params as any).jid);

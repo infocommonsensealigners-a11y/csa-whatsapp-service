@@ -68,16 +68,22 @@ export function registerChatRoutes(app: FastifyInstance): void {
     ).n;
 
     // Etiquetas de WhatsApp Business por chat (read-only, del móvil del usuario).
-    const labelStmt = db.prepare(
-      `SELECT l.name AS name, l.color AS color
-         FROM wa_chat_labels cl JOIN wa_labels l ON l.id = cl.label_id
-        WHERE cl.chat_jid = ? AND l.deleted = 0
-        ORDER BY l.name`
-    );
-    const chats = rows.map((r) => ({
-      ...toSummary(r),
-      waLabels: labelStmt.all(r.jid) as Array<{ name: string; color: number }>,
-    }));
+    // Defensivo: si las tablas de etiquetas faltan o fallan, NUNCA rompe /chats.
+    let chats;
+    try {
+      const labelStmt = db.prepare(
+        `SELECT l.name AS name, l.color AS color
+           FROM wa_chat_labels cl JOIN wa_labels l ON l.id = cl.label_id
+          WHERE cl.chat_jid = ? AND l.deleted = 0
+          ORDER BY l.name`
+      );
+      chats = rows.map((r) => ({
+        ...toSummary(r),
+        waLabels: labelStmt.all(r.jid) as Array<{ name: string; color: number }>,
+      }));
+    } catch {
+      chats = rows.map((r) => ({ ...toSummary(r), waLabels: [] as Array<{ name: string; color: number }> }));
+    }
     return { chats, total };
   });
 

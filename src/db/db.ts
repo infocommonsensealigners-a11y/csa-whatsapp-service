@@ -45,6 +45,24 @@ function migrate(d: Database.Database): void {
   // sirve tanto para BDs nuevas (ya vienen en schema.sql) como existentes.
   ensureColumn(d, "chats", "backfill_status", "TEXT");
 
+  // Tablas añadidas post-v1 (etiquetas de WhatsApp): crear SIEMPRE, idempotente.
+  // El schema.sql solo se aplica a BDs nuevas (current < 1); las existentes
+  // necesitan esto para no quedarse sin las tablas nuevas.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS wa_labels (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      color INTEGER NOT NULL DEFAULT 0,
+      deleted INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS wa_chat_labels (
+      chat_jid TEXT NOT NULL,
+      label_id TEXT NOT NULL,
+      PRIMARY KEY (chat_jid, label_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wa_chat_labels_jid ON wa_chat_labels(chat_jid);
+  `);
+
   d.prepare(
     "INSERT INTO meta(key, value) VALUES('schema_version', ?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value"

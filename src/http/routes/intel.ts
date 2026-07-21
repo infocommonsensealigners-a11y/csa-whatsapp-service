@@ -14,6 +14,7 @@ import type { FastifyInstance } from "fastify";
 import { brainConfigured, getSupabase } from "../../brain/supabase";
 import { getDb } from "../../db/db";
 import { runText, suggestModel } from "../../ai/agent";
+import { analyzeChat } from "../../brain/analyzeChat";
 
 const STRATEGY_SINCE = "2025-04-01";
 const COLS =
@@ -203,6 +204,16 @@ Redacta EL SIGUIENTE mensaje que Fran debería enviarle por WhatsApp para hacer 
     } catch (e) {
       return reply.status(503).send({ ok: false, error: "IA no disponible: " + (e as Error).message });
     }
+  });
+
+  // Análisis EN DIRECTO de un chat (Fransua): calcula la inteligencia al vuelo y
+  // la persiste. Lo llama el teléfono al abrir una conversación sin intel (o
+  // obsoleta) y el webhook cuando entra un mensaje nuevo.
+  app.post("/intel/analyze/:jid", async (req, reply) => {
+    const jid = decodeURIComponent((req.params as any).jid);
+    const res = await analyzeChat(jid);
+    if (!res.ok) return reply.status(res.status).send({ ok: false, error: res.reason });
+    return enrich(res.record as unknown as IntelRow);
   });
 
   app.get("/intel/:jid", async (req, reply) => {

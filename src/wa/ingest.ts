@@ -270,4 +270,39 @@ export function registerIngest(): void {
 
   onWaEvent("contacts.upsert", (contacts) => applyContactNames(contacts, false));
   onWaEvent("contacts.update", (contacts) => applyContactNames(contacts, true));
+
+  // Etiquetas de WhatsApp Business (las del usuario en la app) — read-only.
+  onWaEvent("labels.edit", (label) => {
+    try {
+      getDb()
+        .prepare(
+          `INSERT INTO wa_labels(id, name, color, deleted) VALUES (@id, @name, @color, @deleted)
+           ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color, deleted = excluded.deleted`
+        )
+        .run({
+          id: label.id,
+          name: label.name ?? "",
+          color: typeof label.color === "number" ? label.color : 0,
+          deleted: label.deleted ? 1 : 0,
+        });
+    } catch (err) {
+      console.error("[ingest] labels.edit:", (err as Error).message);
+    }
+  });
+
+  onWaEvent("labels.association", ({ association, type }) => {
+    try {
+      const assoc = association as { type?: string; chatId?: string; labelId?: string; messageId?: string };
+      // Solo asociaciones de CHAT (no de mensaje): type "label_jid".
+      if (assoc?.type !== "label_jid" || !assoc.chatId || !assoc.labelId) return;
+      const db = getDb();
+      if (type === "add") {
+        db.prepare(`INSERT OR IGNORE INTO wa_chat_labels(chat_jid, label_id) VALUES (?, ?)`).run(assoc.chatId, assoc.labelId);
+      } else {
+        db.prepare(`DELETE FROM wa_chat_labels WHERE chat_jid = ? AND label_id = ?`).run(assoc.chatId, assoc.labelId);
+      }
+    } catch (err) {
+      console.error("[ingest] labels.association:", (err as Error).message);
+    }
+  });
 }

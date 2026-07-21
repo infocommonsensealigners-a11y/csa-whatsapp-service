@@ -110,3 +110,20 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- Etiquetas de WhatsApp Business (las que el usuario pone en la app), leídas en
+-- vivo por Baileys (labels.edit / labels.association). `color` = índice 0-19 de la
+-- paleta de WhatsApp; el dashboard lo mapea a un color. Independiente de las
+-- etiquetas de Fransua (IA), que viven en Supabase (chat_intel.etiquetas).
+CREATE TABLE IF NOT EXISTS wa_labels (
+  id TEXT PRIMARY KEY,
+  name TEXT,
+  color INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS wa_chat_labels (
+  chat_jid TEXT NOT NULL,
+  label_id TEXT NOT NULL,
+  PRIMARY KEY (chat_jid, label_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wa_chat_labels_jid ON wa_chat_labels(chat_jid);

@@ -13,6 +13,7 @@ import { getDb, setMeta } from "../db/db";
 import { emitSse } from "../http/sse";
 import { isStorableChatJid, jidToPhone } from "./jidPhone";
 import { onWaEvent } from "./socket";
+import { analyzeChat } from "../brain/analyzeChat";
 
 type MsgType = "text" | "image" | "audio" | "video" | "document" | "other";
 
@@ -199,6 +200,30 @@ function applyContactNames(contacts: Array<Partial<Contact>>, overwrite: boolean
   }
 }
 
+/* ------------- Fransua EN DIRECTO: re-análisis al llegar mensaje ------------- */
+// Cuando entra un mensaje NUEVO en vivo (type "notify", NO el backfill de
+// historial), re-analizamos ese chat tras un pequeño anti-rebote: deja que la
+// ráfaga se asiente (WhatsApp llega a golpes) y evita saturar la IA. Un timer por
+// jid; si llegan más mensajes, se reinicia y solo analiza cuando la charla pausa.
+const LIVE_ANALYZE_DEBOUNCE_MS = 20_000;
+const liveAnalyzeTimers = new Map<string, NodeJS.Timeout>();
+
+function scheduleLiveAnalyze(jid: string): void {
+  const prev = liveAnalyzeTimers.get(jid);
+  if (prev) clearTimeout(prev);
+  liveAnalyzeTimers.set(
+    jid,
+    setTimeout(() => {
+      liveAnalyzeTimers.delete(jid);
+      analyzeChat(jid)
+        .then((r) => {
+          if (r.ok) console.log(`[intel] re-análisis en vivo OK: ${jid}`);
+        })
+        .catch((e) => console.error("[intel] re-análisis en vivo falló:", (e as Error).message));
+    }, LIVE_ANALYZE_DEBOUNCE_MS)
+  );
+}
+
 /** Registra los listeners de ingesta en la fachada (sobreviven reconexiones). */
 export function registerIngest(): void {
   onWaEvent("messaging-history.set", (payload) => {
@@ -234,6 +259,10 @@ export function registerIngest(): void {
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")
       );
       for (const jid of result.touched) emitSse({ type: "message.new", jid });
+      // Fransua EN DIRECTO: solo mensajes nuevos reales ("notify"), no el backfill.
+      if (type === "notify") {
+        for (const jid of result.touched) scheduleLiveAnalyze(jid);
+      }
     } catch (err) {
       console.error("[ingest] error procesando upsert:", (err as Error).message);
     }

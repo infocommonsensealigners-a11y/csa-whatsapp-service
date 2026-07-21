@@ -45,6 +45,62 @@ type Interpretation = {
 
 const canonPhone = (p?: string) => (p ? String(p).replace(/\D/g, "").slice(-9) : "");
 
+/* -------------------------------------------------------------------------- */
+/* Foto de la cartera para /intel/ask — cacheada 60s (latencia)               */
+/* -------------------------------------------------------------------------- */
+
+/** Modelo del chat de cartera: WA_AI_MODEL_ASK manda; si no, el de sugerencias. */
+const askModel = process.env.WA_AI_MODEL_ASK ?? suggestModel;
+
+type AskCartera = { lines: string; shownCount: number; totalWithSignal: number };
+let askCarteraCache: { at: number; value: AskCartera } | null = null;
+const ASK_CARTERA_TTL_MS = 60_000;
+
+/**
+ * La "foto" de la cartera que se incrusta en el prompt de /intel/ask. Se cachea
+ * ASK_CARTERA_TTL_MS en memoria: en una conversación de varios turnos, solo el
+ * primer turno paga la lectura de Supabase (~0,5-1s); los siguientes salen al
+ * modelo directamente. El intel cambia despacio (lo refresca el análisis de
+ * conversaciones), así que 60s de frescura no pierden nada relevante.
+ */
+async function getAskCartera(): Promise<AskCartera> {
+  const nowMs = Date.now();
+  if (askCarteraCache && nowMs - askCarteraCache.at < ASK_CARTERA_TTL_MS) return askCarteraCache.value;
+
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("chat_intel")
+    .select("display_name,producto,temperatura,resumen,intereses,etiquetas,last_ts,intervalos")
+    .order("last_ts", { ascending: false })
+    .limit(2000);
+  if (error) throw new Error(error.message);
+
+  const now = Math.floor(nowMs / 1000);
+  const rank = (t: string | null) => (t === "caliente" ? 3 : t === "templado" ? 2 : t === "frio" ? 1 : 0);
+  const rows = (data ?? []) as any[];
+  // Prioriza leads con SEÑAL (temperatura o resumen), por temperatura y recencia.
+  const withSignal = rows
+    .filter((r) => r.temperatura || r.resumen)
+    .sort((a, b) => rank(b.temperatura) - rank(a.temperatura) || (b.last_ts ?? 0) - (a.last_ts ?? 0));
+  const CAP = 450;
+  const shown = withSignal.slice(0, CAP);
+  const lines = shown
+    .map((r) => {
+      const sil = r.last_ts ? Math.round((now - r.last_ts) / 86400) : "?";
+      const esperando = r.intervalos?.ultimo_emisor === "lead" ? " · ESPERANDO-RESP" : "";
+      const intereses = Array.isArray(r.intereses)
+        ? r.intereses.map((x: any) => x?.label ?? x).filter(Boolean).slice(0, 3).join("/")
+        : "";
+      const resumen = (r.resumen ?? "").replace(/\s+/g, " ").slice(0, 110);
+      return `- ${r.display_name ?? "?"} · ${r.temperatura ?? "?"} · ${r.producto ?? "?"} · ${sil}d${esperando}${intereses ? ` · int:${intereses}` : ""}${resumen ? ` · ${resumen}` : ""}`;
+    })
+    .join("\n");
+
+  const value: AskCartera = { lines, shownCount: shown.length, totalWithSignal: withSignal.length };
+  askCarteraCache = { at: nowMs, value };
+  return value;
+}
+
 /** Localiza la fila de chat_intel del lead (por teléfono → sourceRow → jid). */
 async function resolveIntel(sb: ReturnType<typeof getSupabase>, body: NoteBody) {
   const cols =
@@ -291,36 +347,24 @@ export function registerNoteRoutes(app: FastifyInstance): void {
   // "¿qué objeciones aparecen?", "resúmeme a X") y Fransua responde cruzando la
   // inteligencia de las conversaciones (chat_intel). Un turno; el historial se
   // reenvía en cada llamada para dar continuidad.
+  //
+  // LATENCIA: (a) la foto de la cartera se CACHEA 60s en memoria — en una
+  // conversación de varios turnos solo el primero paga la lectura de Supabase;
+  // (b) el modelo es configurable por env WA_AI_MODEL_ASK (p.ej. "haiku" si se
+  // prefiere velocidad a matiz) sin tocar código; (c) la respuesta se fuerza
+  // CORTA por contrato de formato (menos tokens = menos espera).
   app.post("/intel/ask", async (req, reply) => {
     if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
     const body = (req.body ?? {}) as { question?: string; history?: Array<{ role: string; content: string }> };
     const question = String(body.question ?? "").trim();
     if (!question) return reply.status(400).send({ ok: false, error: "question vacía" });
 
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from("chat_intel")
-      .select("display_name,producto,temperatura,resumen,intereses,etiquetas,last_ts,intervalos")
-      .order("last_ts", { ascending: false })
-      .limit(2000);
-    if (error) return reply.status(502).send({ ok: false, error: error.message });
-
-    const now = Math.floor(Date.now() / 1000);
-    const rank = (t: string | null) => (t === "caliente" ? 3 : t === "templado" ? 2 : t === "frio" ? 1 : 0);
-    const rows = (data ?? []) as any[];
-    // Prioriza leads con SEÑAL (temperatura o resumen), por temperatura y recencia.
-    const withSignal = rows
-      .filter((r) => r.temperatura || r.resumen)
-      .sort((a, b) => rank(b.temperatura) - rank(a.temperatura) || (b.last_ts ?? 0) - (a.last_ts ?? 0));
-    const CAP = 450;
-    const shown = withSignal.slice(0, CAP);
-    const lines = shown.map((r) => {
-      const sil = r.last_ts ? Math.round((now - r.last_ts) / 86400) : "?";
-      const esperando = r.intervalos?.ultimo_emisor === "lead" ? " · ESPERANDO-RESP" : "";
-      const intereses = Array.isArray(r.intereses) ? r.intereses.map((x: any) => x?.label ?? x).filter(Boolean).slice(0, 3).join("/") : "";
-      const resumen = (r.resumen ?? "").replace(/\s+/g, " ").slice(0, 110);
-      return `- ${r.display_name ?? "?"} · ${r.temperatura ?? "?"} · ${r.producto ?? "?"} · ${sil}d${esperando}${intereses ? ` · int:${intereses}` : ""}${resumen ? ` · ${resumen}` : ""}`;
-    });
+    let cartera: AskCartera;
+    try {
+      cartera = await getAskCartera();
+    } catch (e) {
+      return reply.status(502).send({ ok: false, error: (e as Error).message });
+    }
 
     const hist = (body.history ?? [])
       .slice(-6)
@@ -330,15 +374,23 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const prompt = [
       "Eres Fransua, el cerebro comercial de Common Sense Aligners (CSA), que VENDE FORMACIÓN a",
       "dentistas (programa SBA, certificación, mentoría, estancia clínica) — NO trata pacientes.",
-      "Fran, el comercial, te pregunta sobre su cartera. Responde en ESPAÑOL, concreto y accionable,",
-      "basándote SOLO en los datos de abajo. Si te piden a quién llamar/priorizar, da NOMBRES concretos",
-      "y el porqué (temperatura, silencio, si espera respuesta). Si un dato no está, dilo con franqueza.",
-      "Sé breve por defecto; amplía solo si lo piden.",
+      "Fran, el comercial, te pregunta sobre su cartera. Responde en ESPAÑOL basándote SOLO en los",
+      "datos de abajo. Si un dato no está, dilo con franqueza.",
       "",
-      `=== CARTERA (hoy · ${shown.length}${withSignal.length > CAP ? ` de ${withSignal.length}` : ""} leads con conversación analizada) ===`,
+      "FORMATO DE RESPUESTA (obligatorio — Fran lee esto en una ventana pequeña mientras trabaja):",
+      "- Arranca DIRECTO con una línea de titular con la respuesta (sin saludos ni preámbulos).",
+      "- Si la respuesta son leads/acciones: lista numerada, máx 5 salvo que pidan más, cada item:",
+      "  `1. **Nombre** — motivo breve (temperatura, Xd de silencio, si te espera) → llama/escríbele y qué decirle en una frase.`",
+      "  (el tramo de la acción SIEMPRE introducido con la flecha `→`).",
+      "- Si aporta, cierra con UNA línea `➜ Siguiente paso: …` (lo primero que Fran debería hacer al cerrar esta ventana).",
+      "- Máximo ~130 palabras en total. Nada de párrafos largos. Amplía solo si Fran lo pide.",
+      "",
+      `=== CARTERA (hoy · ${cartera.shownCount}${cartera.totalWithSignal > cartera.shownCount ? ` de ${cartera.totalWithSignal}` : ""} leads con conversación analizada) ===`,
       "Formato: nombre · temperatura · producto · días de silencio · [ESPERANDO-RESP] · intereses · resumen",
-      lines.join("\n"),
-      withSignal.length > CAP ? `(…y ${withSignal.length - CAP} leads más con menos señal, no listados)` : "",
+      cartera.lines,
+      cartera.totalWithSignal > cartera.shownCount
+        ? `(…y ${cartera.totalWithSignal - cartera.shownCount} leads más con menos señal, no listados)`
+        : "",
       "",
       hist ? "=== CONVERSACIÓN PREVIA ===\n" + hist : "",
       "",
@@ -349,8 +401,8 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       .join("\n");
 
     try {
-      const answer = await runText(prompt, suggestModel);
-      return { ok: true, answer: answer || "(sin respuesta)", leadsConsiderados: shown.length };
+      const answer = await runText(prompt, askModel);
+      return { ok: true, answer: answer || "(sin respuesta)", leadsConsiderados: cartera.shownCount };
     } catch (e) {
       return reply.status(502).send({ ok: false, error: "IA no disponible", message: (e as Error).message });
     }

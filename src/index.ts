@@ -44,7 +44,13 @@ async function main(): Promise<void> {
   // Tolerante a mayúsculas/espacios para que un valor tipo "Off " no lo active.
   const wantConnect = (process.env.WA_CONNECT ?? "").trim().toLowerCase() !== "off";
   if (wantConnect) {
-    await startWhatsapp();
+    // BLINDAJE: si Baileys peta al arrancar (red, auth corrupta…) NO debe abortar
+    // el bootstrap — el servidor HTTP tiene que arrancar igual para seguir sirviendo
+    // intel/agenda/histórico. El fallo se registra y la reconexión con backoff (en
+    // socket.ts) lo reintenta sola. Nunca tumba el proceso.
+    startWhatsapp().catch((err) => {
+      console.error("[wa] startWhatsapp falló al arrancar (se reintentará solo):", (err as Error).message);
+    });
   } else {
     console.log("[wa] WA_CONNECT=off → Baileys NO se conecta (modo solo lectura).");
   }

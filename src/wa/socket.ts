@@ -190,9 +190,26 @@ export async function startWhatsapp(): Promise<void> {
     for (const { event, handler } of registrations) {
       s.ev.on(event, handler as never);
     }
+  } catch (err) {
+    // Fallo al iniciar (red caída, auth corrupta, versión…): NO propagamos —
+    // dejamos el estado en "close" y reintentamos solos con backoff. Así el
+    // sidecar nunca se queda sin Baileys por un tropiezo de arranque.
+    log.error({ err: (err as Error).message }, "wa: fallo al iniciar; reintento con backoff");
+    setState("close");
+    scheduleReconnect();
   } finally {
     starting = false;
   }
+}
+
+/** Programa una reconexión con backoff exponencial (1 s → 60 s). Reutilizable. */
+function scheduleReconnect(): void {
+  if (shuttingDown) return;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    void startWhatsapp();
+  }, reconnectDelayMs);
+  reconnectDelayMs = Math.min(reconnectDelayMs * 2, 60_000);
 }
 
 /**
@@ -276,10 +293,6 @@ async function handleConnectionUpdate(
     setState("close");
     log.warn({ statusCode, retryInMs: reconnectDelayMs }, "wa: conexión cerrada, reintentando");
     teardownSocket();
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => {
-      void startWhatsapp();
-    }, reconnectDelayMs);
-    reconnectDelayMs = Math.min(reconnectDelayMs * 2, 60_000);
+    scheduleReconnect();
   }
 }

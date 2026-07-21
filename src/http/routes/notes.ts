@@ -88,11 +88,17 @@ async function getAskCartera(): Promise<AskCartera> {
     .map((r) => {
       const sil = r.last_ts ? Math.round((now - r.last_ts) / 86400) : "?";
       const esperando = r.intervalos?.ultimo_emisor === "lead" ? " · ESPERANDO-RESP" : "";
+      // Marca CLIENTE: ya es alumno/cliente (etiqueta del análisis o del sync
+      // con el CRM) → Fransua no debe recomendarle venta de captación, sino
+      // cuidado/renovación.
+      const cliente = Array.isArray(r.etiquetas) && r.etiquetas.some((e: any) => String(e).toLowerCase() === "cliente")
+        ? " · CLIENTE"
+        : "";
       const intereses = Array.isArray(r.intereses)
         ? r.intereses.map((x: any) => x?.label ?? x).filter(Boolean).slice(0, 3).join("/")
         : "";
       const resumen = (r.resumen ?? "").replace(/\s+/g, " ").slice(0, 110);
-      return `- ${r.display_name ?? "?"} · ${r.temperatura ?? "?"} · ${r.producto ?? "?"} · ${sil}d${esperando}${intereses ? ` · int:${intereses}` : ""}${resumen ? ` · ${resumen}` : ""}`;
+      return `- ${r.display_name ?? "?"} · ${r.temperatura ?? "?"} · ${r.producto ?? "?"} · ${sil}d${esperando}${cliente}${intereses ? ` · int:${intereses}` : ""}${resumen ? ` · ${resumen}` : ""}`;
     })
     .join("\n");
 
@@ -386,7 +392,8 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       "- Máximo ~130 palabras en total. Nada de párrafos largos. Amplía solo si Fran lo pide.",
       "",
       `=== CARTERA (hoy · ${cartera.shownCount}${cartera.totalWithSignal > cartera.shownCount ? ` de ${cartera.totalWithSignal}` : ""} leads con conversación analizada) ===`,
-      "Formato: nombre · temperatura · producto · días de silencio · [ESPERANDO-RESP] · intereses · resumen",
+      "Formato: nombre · temperatura · producto · días de silencio · [ESPERANDO-RESP] · [CLIENTE] · intereses · resumen",
+      "OJO: los marcados CLIENTE ya son alumnos/clientes de CSA — con ellos NO recomiendes venta de captación; solo cuidado, soporte o renovación (y dilo así).",
       cartera.lines,
       cartera.totalWithSignal > cartera.shownCount
         ? `(…y ${cartera.totalWithSignal - cartera.shownCount} leads más con menos señal, no listados)`

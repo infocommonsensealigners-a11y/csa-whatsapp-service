@@ -33,11 +33,26 @@ type IntelRow = {
   resumen: string | null; intereses: unknown; intervalos: any; etiquetas: unknown; updated_at: string;
 };
 
-/** Añade campos derivados en vivo (silencio real desde last_ts, pendiente de respuesta). */
+/** True cuando las etiquetas marcan que YA es alumno/cliente de CSA. */
+function esCliente(r: IntelRow): boolean {
+  const ets = Array.isArray(r.etiquetas) ? (r.etiquetas as unknown[]) : [];
+  return ets.some((e) => {
+    const s = String(e).toLowerCase();
+    return s === "cliente" || s === "ya inscrito" || s === "alumno" || s === "alumna";
+  });
+}
+
+/** Añade campos derivados en vivo (silencio real desde last_ts, pendiente de respuesta, es_cliente). */
 function enrich(r: IntelRow) {
   const silencioDias = Math.round(daysSince(r.last_ts));
   const ultimoEmisor = r.intervalos?.ultimo_emisor ?? null;
-  return { ...r, silencio_dias: silencioDias, ultimo_emisor: ultimoEmisor, esperando_respuesta: ultimoEmisor === "lead" };
+  return {
+    ...r,
+    silencio_dias: silencioDias,
+    ultimo_emisor: ultimoEmisor,
+    esperando_respuesta: ultimoEmisor === "lead",
+    es_cliente: esCliente(r),
+  };
 }
 
 export function registerIntelRoutes(app: FastifyInstance): void {
@@ -64,20 +79,32 @@ export function registerIntelRoutes(app: FastifyInstance): void {
       else byTemp.sin_dato++;
     }
 
+    // CATEGORÍA: los que YA son alumnos/clientes (etiqueta "cliente", puesta por
+    // el análisis o por el sync de verdad-terreno del CRM) SALEN de los carriles
+    // de VENTA y van a su carril propio — un alumno esperando respuesta importa,
+    // pero es cuidado/postventa, no captación.
+    const venta = rows.filter((r) => !r.es_cliente);
+    const clientes = rows.filter((r) => r.es_cliente);
+
     // Acciones priorizadas para HOY:
     // 1) leads que escribieron ellos y siguen sin respuesta (esperando a Fran).
-    const esperando = rows
+    const esperando = venta
       .filter((r) => r.esperando_respuesta && r.silencio_dias >= 0)
       .sort((a, b) => tempRank(b.temperatura) - tempRank(a.temperatura) || a.silencio_dias - b.silencio_dias)
       .slice(0, 25);
     // 2) calientes que se están enfriando (sin actividad ≥ 2 días).
-    const calientesEnfriando = rows
+    const calientesEnfriando = venta
       .filter((r) => r.temperatura === "caliente" && r.silencio_dias >= 2)
       .sort((a, b) => a.silencio_dias - b.silencio_dias)
       .slice(0, 25);
     // 3) templados a reactivar (7–45 días de silencio).
-    const templadosReactivar = rows
+    const templadosReactivar = venta
       .filter((r) => r.temperatura === "templado" && r.silencio_dias >= 7 && r.silencio_dias <= 45)
+      .sort((a, b) => a.silencio_dias - b.silencio_dias)
+      .slice(0, 25);
+    // 4) alumnos/clientes que escribieron y esperan respuesta (postventa).
+    const alumnosEscriben = clientes
+      .filter((r) => r.esperando_respuesta && r.silencio_dias >= 0)
       .sort((a, b) => a.silencio_dias - b.silencio_dias)
       .slice(0, 25);
 
@@ -89,6 +116,51 @@ export function registerIntelRoutes(app: FastifyInstance): void {
       esperandoRespuesta: esperando,
       calientesEnfriando,
       templadosReactivar,
+      alumnosEscriben,
+      clientesDetectados: clientes.length,
+    };
+  });
+
+  // SYNC DE VERDAD-TERRENO: el dashboard conoce quién ES cliente de verdad
+  // (estado Compra en el CRM + matriculados en EDICIONES). Este endpoint recibe
+  // esos teléfonos canónicos (9 díg) y etiqueta "cliente" en chat_intel — la
+  // fuente exacta, sin IA, idempotente. Lo dispara el script
+  // dashboard/scripts/sync-clientes-brain.ts (re-ejecutable cuando se quiera).
+  app.post("/intel/clientes-sync", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const body = (req.body ?? {}) as { phones?: unknown };
+    const phones = Array.isArray(body.phones)
+      ? Array.from(new Set(body.phones.map((p) => String(p).replace(/\D/g, "").slice(-9)).filter((p) => p.length === 9)))
+      : [];
+    if (phones.length === 0) return reply.status(400).send({ ok: false, error: "phones vacío" });
+
+    const sb = getSupabase();
+    let matched = 0;
+    const jidsEtiquetados: string[] = [];
+    // Lotes de 200 teléfonos por consulta (límite práctico del filtro .in()).
+    for (let i = 0; i < phones.length; i += 200) {
+      const batch = phones.slice(i, i + 200);
+      const { data, error } = await sb.from("chat_intel").select("jid,etiquetas").in("phone", batch);
+      if (error) return reply.status(502).send({ ok: false, error: error.message });
+      for (const row of (data ?? []) as { jid: string; etiquetas: unknown }[]) {
+        matched += 1;
+        const ets = Array.isArray(row.etiquetas) ? row.etiquetas.map((e) => String(e)) : [];
+        if (ets.some((e) => e.toLowerCase() === "cliente")) continue;
+        const { error: upErr } = await sb
+          .from("chat_intel")
+          .update({ etiquetas: ["cliente", ...ets] })
+          .eq("jid", row.jid);
+        if (!upErr) jidsEtiquetados.push(row.jid);
+      }
+    }
+    // jidsEtiquetados = recién marcados (su resumen puede ser "de venta" viejo):
+    // son los candidatos a re-análisis (scripts/sync-clientes-brain --reanalyze).
+    return {
+      ok: true,
+      phonesRecibidos: phones.length,
+      chatsEncontrados: matched,
+      etiquetados: jidsEtiquetados.length,
+      jidsEtiquetados,
     };
   });
 

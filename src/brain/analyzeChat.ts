@@ -21,6 +21,8 @@ type Ai = {
   intereses?: Array<{ label: string; evidence?: string }>;
   etiquetas?: string[];
   producto_mencionado?: string;
+  /** "cliente" cuando la conversación evidencia que YA es alumno/cliente de CSA. */
+  categoria?: string;
 };
 
 const MEDIA_LABEL: Record<string, string> = {
@@ -94,15 +96,24 @@ Devuelve SOLO un objeto JSON con EXACTAMENTE estas claves:
   "temperatura_motivo": "una frase breve que justifique la temperatura",
   "intereses": [{"label": "interés concreto (p.ej. financiación, fechas, contenido clínico, modalidad)", "evidence": "cita muy breve del chat"}],
   "etiquetas": ["etiqueta corta para el comercial"],
-  "producto_mencionado": "programa | mentoría | certificación | masterclass | financiación | ninguno | otro"
+  "producto_mencionado": "programa | mentoría | certificación | masterclass | financiación | ninguno | otro",
+  "categoria": "lead | cliente"
 }
 
-Criterios de temperatura (intención de INSCRIBIRSE en la formación):
+CATEGORÍA (importantísimo — separa captación de postventa):
+- "cliente": la conversación evidencia que YA es alumno/cliente de CSA — habla de "mi curso",
+  su acceso a la plataforma, sus clases/módulos, su estancia, su renovación, soporte de casos
+  como alumno, o dice explícitamente que se inscribió/es alumna. Si es cliente, el resumen debe
+  decirlo en la PRIMERA frase y la temperatura pasa a medir su intención de RENOVAR o comprar
+  algo más (no de inscribirse).
+- "lead": todavía no es alumno (aunque esté a punto de comprar).
+
+Criterios de temperatura (intención de INSCRIBIRSE en la formación; en clientes, de RENOVAR/ampliar):
 - caliente: pidió plaza, pidió precio concreto del programa, preguntó fechas de inicio, o mostró intención clara de apuntarse.
 - templado: interesado pero con dudas o sin cerrar; conversación abierta.
 - frio: sin respuesta reciente, rechazo explícito, o consulta ya resuelta sin continuidad comercial.
 
-Etiquetas útiles (ejemplos): "quiere inscribirse", "pide precio programa", "pide info programa", "duda financiación", "pregunta fechas", "no contesta", "ya inscrito", "pregunta general". No inventes datos ni precios. Sé conciso.
+Etiquetas útiles (ejemplos): "quiere inscribirse", "pide precio programa", "pide info programa", "duda financiación", "pregunta fechas", "no contesta", "cliente", "soporte alumno", "renovación", "pregunta general". Si categoria es "cliente", incluye SIEMPRE la etiqueta "cliente". No inventes datos ni precios. Sé conciso.
 
 CONVERSACIÓN:
 ${transcript}`;
@@ -163,6 +174,12 @@ export async function analyzeChat(jid: string): Promise<AnalyzeResult> {
   const first_ts = msgs[0].ts;
   const last_ts = msgs[msgs.length - 1].ts;
   const from_me_count = msgs.reduce((n, m) => n + (m.from_me ? 1 : 0), 0);
+  // La categoría vive en `etiquetas` (chat_intel no cambia de esquema): si la IA
+  // dictaminó "cliente", la etiqueta "cliente" va SIEMPRE presente (y única).
+  const etiquetas = Array.isArray(ai.etiquetas) ? [...ai.etiquetas] : [];
+  if ((ai.categoria ?? "").toLowerCase() === "cliente" && !etiquetas.some((e) => String(e).toLowerCase() === "cliente")) {
+    etiquetas.unshift("cliente");
+  }
   const record = {
     jid,
     phone: meta.phone ?? null,
@@ -178,7 +195,7 @@ export async function analyzeChat(jid: string): Promise<AnalyzeResult> {
     resumen: ai.resumen ?? null,
     intereses: ai.intereses ?? null,
     intervalos: iv,
-    etiquetas: ai.etiquetas ?? null,
+    etiquetas: etiquetas.length ? etiquetas : null,
     model: bulkModel,
     generation: 1,
     updated_at: new Date().toISOString(),

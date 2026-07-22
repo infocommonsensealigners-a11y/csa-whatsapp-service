@@ -15,6 +15,7 @@ import { brainConfigured, getSupabase } from "../../brain/supabase";
 import { getDb } from "../../db/db";
 import { runText, suggestModel } from "../../ai/agent";
 import { analyzeChat } from "../../brain/analyzeChat";
+import { getPlanContext } from "../../brain/plan";
 
 const STRATEGY_SINCE = "2025-04-01";
 const COLS =
@@ -260,14 +261,17 @@ export function registerIntelRoutes(app: FastifyInstance): void {
       temperatura = row?.temperatura ?? null;
     }
 
+    const planTexto = await getPlanContext().then((p) => p.texto).catch(() => null);
+
     const prompt = `Eres Fransua, el asistente del comercial de Common Sense Aligners (CSA). CSA vende FORMACIÓN a dentistas (programa SBA — Sistema de Biomecánica Avanzada); NO es una clínica y los leads son profesionales de la odontología.
 
+${planTexto ? planTexto + "\n" : ""}
 Conversación de WhatsApp entre Fran (el comercial) y ${chat.display_name || "el lead"} (de más antiguo a más reciente):
 ---
 ${transcript}
 ---
 ${resumen ? `Resumen previo del lead: ${resumen}\nTemperatura: ${temperatura ?? "?"}\n` : ""}
-Redacta EL SIGUIENTE mensaje que Fran debería enviarle por WhatsApp para hacer avanzar la relación/venta de forma natural. Requisitos: español de España, tono cercano y profesional, sin sonar a plantilla, 1-3 frases, listo para copiar y pegar. Responde ÚNICAMENTE con el texto del mensaje (sin comillas, sin explicaciones, sin firma).`;
+Redacta EL SIGUIENTE mensaje que Fran debería enviarle por WhatsApp para hacer avanzar la relación/venta de forma natural. Si hay una oferta o hito vigente este mes que encaje con este lead, puedes usarlo, pero SIN inventar precios ni condiciones que no estén arriba. Requisitos: español de España, tono cercano y profesional, sin sonar a plantilla, 1-3 frases, listo para copiar y pegar. Responde ÚNICAMENTE con el texto del mensaje (sin comillas, sin explicaciones, sin firma).`;
 
     try {
       const suggestion = (await runText(prompt, suggestModel)).replace(/^["']|["']$/g, "").trim();

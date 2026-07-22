@@ -23,6 +23,7 @@
 import type { FastifyInstance } from "fastify";
 import { brainConfigured, getSupabase } from "../../brain/supabase";
 import { runJson, runText, suggestModel } from "../../ai/agent";
+import { getPlanContext } from "../../brain/plan";
 
 type NoteBody = {
   phone?: string;
@@ -127,7 +128,7 @@ async function resolveIntel(sb: ReturnType<typeof getSupabase>, body: NoteBody) 
   return null;
 }
 
-function buildPrompt(name: string, intel: any, text: string): string {
+function buildPrompt(name: string, intel: any, text: string, planTexto: string | null): string {
   const intereses = Array.isArray(intel?.intereses)
     ? intel.intereses.map((x: any) => x?.label ?? x).filter(Boolean).join(", ")
     : "";
@@ -136,6 +137,7 @@ function buildPrompt(name: string, intel: any, text: string): string {
     "a dentistas (programa SBA, certificación, mentoría, estancia clínica) — NO trata pacientes.",
     "El comercial Fran te deja una nota sobre un lead. Interprétala y decide qué hacer.",
     "",
+    planTexto || "",
     `LEAD: ${name || "(sin nombre)"}` +
       (intel?.producto ? ` · producto: ${intel.producto}` : "") +
       (intel?.temperatura ? ` · temperatura actual: ${intel.temperatura}` : "") +
@@ -179,7 +181,8 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     let interp: Interpretation | null = null;
     let aiError: string | null = null;
     try {
-      interp = await runJson<Interpretation>(buildPrompt(name, intel, text), suggestModel);
+      const planTexto = await getPlanContext().then((p) => p.texto).catch(() => null);
+      interp = await runJson<Interpretation>(buildPrompt(name, intel, text, planTexto), suggestModel);
     } catch (e) {
       aiError = (e as Error).message;
     }
@@ -366,8 +369,12 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     if (!question) return reply.status(400).send({ ok: false, error: "question vacía" });
 
     let cartera: AskCartera;
+    let planTexto: string | null;
     try {
-      cartera = await getAskCartera();
+      [cartera, planTexto] = await Promise.all([
+        getAskCartera(),
+        getPlanContext().then((p) => p.texto).catch(() => null),
+      ]);
     } catch (e) {
       return reply.status(502).send({ ok: false, error: (e as Error).message });
     }
@@ -390,6 +397,8 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       "  (el tramo de la acción SIEMPRE introducido con la flecha `→`).",
       "- Si aporta, cierra con UNA línea `➜ Siguiente paso: …` (lo primero que Fran debería hacer al cerrar esta ventana).",
       "- Máximo ~130 palabras en total. Nada de párrafos largos. Amplía solo si Fran lo pide.",
+      "",
+      planTexto || "",
       "",
       `=== CARTERA (hoy · ${cartera.shownCount}${cartera.totalWithSignal > cartera.shownCount ? ` de ${cartera.totalWithSignal}` : ""} leads con conversación analizada) ===`,
       "Formato: nombre · temperatura · producto · días de silencio · [ESPERANDO-RESP] · [CLIENTE] · intereses · resumen",

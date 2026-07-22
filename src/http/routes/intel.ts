@@ -13,7 +13,7 @@
 import type { FastifyInstance } from "fastify";
 import { brainConfigured, getSupabase } from "../../brain/supabase";
 import { getDb } from "../../db/db";
-import { runText, suggestModel } from "../../ai/agent";
+import { runText, runJson, suggestModel } from "../../ai/agent";
 import { analyzeChat } from "../../brain/analyzeChat";
 import { getPlanContext } from "../../brain/plan";
 
@@ -277,6 +277,55 @@ Redacta EL SIGUIENTE mensaje que Fran debería enviarle por WhatsApp para hacer 
       const suggestion = (await runText(prompt, suggestModel)).replace(/^["']|["']$/g, "").trim();
       if (!suggestion) return reply.status(503).send({ ok: false, error: "IA no disponible ahora mismo." });
       return { ok: true, jid, suggestion };
+    } catch (e) {
+      return reply.status(503).send({ ok: false, error: "IA no disponible: " + (e as Error).message });
+    }
+  });
+
+  // EXTRAER DATOS FISCALES del hilo de un contacto (para autorrellenar una
+  // factura en el dashboard). Acepta ?tel=<teléfono> o ?jid=<jid>. Lee los
+  // mensajes de sqlite y pide a Claude (suscripción) un JSON estricto. Solo
+  // lectura; no toca Supabase ni escribe nada.
+  app.get("/intel/extract-fiscal", async (req, reply) => {
+    const db = getDb();
+    const { tel, jid: jidQ } = req.query as { tel?: string; jid?: string };
+    let jid = (jidQ || "").trim();
+    let chat: { jid: string; phone: string | null; display_name: string | null } | undefined;
+    if (jid) {
+      chat = db.prepare("SELECT jid, phone, display_name FROM chats WHERE jid = ?").get(jid) as any;
+    } else if (tel && String(tel).trim()) {
+      const phone = String(tel).replace(/\D/g, "").slice(-9);
+      chat = db
+        .prepare("SELECT jid, phone, display_name FROM chats WHERE phone = ? ORDER BY last_message_at DESC LIMIT 1")
+        .get(phone) as any;
+      jid = chat?.jid || "";
+    } else {
+      return reply.status(400).send({ ok: false, error: "Falta ?tel= o ?jid=" });
+    }
+    if (!chat || !jid) return reply.status(404).send({ ok: false, error: "No hay chat de WhatsApp para ese contacto." });
+
+    const rows = db
+      .prepare("SELECT from_me, text FROM messages WHERE chat_jid = ? AND text IS NOT NULL AND text <> '' ORDER BY ts ASC")
+      .all(jid) as { from_me: number; text: string }[];
+    if (rows.length === 0) return reply.status(422).send({ ok: false, error: "El contacto no tiene mensajes de texto." });
+    const transcript = rows
+      .map((m) => `${m.from_me ? "Fran" : chat!.display_name || "Cliente"}: ${m.text}`)
+      .join("\n")
+      .slice(-12000);
+
+    const prompt = `Extrae los DATOS FISCALES del CLIENTE (nunca los de Fran, el comercial) de esta conversación de WhatsApp de Common Sense Aligners (formación a dentistas), para emitir una factura.
+Devuelve SOLO un objeto JSON con EXACTAMENTE estas claves (usa null si el dato NO aparece; NO inventes nada):
+{"cif":null,"razonSocial":null,"nombre":null,"direccion":null,"cp":null,"ciudad":null,"provincia":null,"importe":null,"formaPago":null,"confianza":"alta"}
+Reglas: "cif" = CIF/NIF español del cliente (formato válido); "razonSocial" = nombre fiscal o empresa (si es autónomo, su nombre y apellidos completos); "nombre" = persona de contacto; "direccion"/"cp"/"ciudad"/"provincia" = domicilio fiscal del cliente; "importe" en euros como número con punto decimal (o null); "formaPago" si se menciona (Transferencia/Fraccionado…); "confianza" = "alta"|"media"|"baja" según cuántos datos claros del cliente haya. Toma SIEMPRE los datos del CLIENTE.
+CONVERSACIÓN (de más antigua a más reciente):
+---
+${transcript}
+---`;
+
+    try {
+      const fiscal = await runJson<Record<string, unknown>>(prompt, suggestModel);
+      if (!fiscal) return reply.status(503).send({ ok: false, error: "La IA no pudo extraer los datos ahora mismo." });
+      return { ok: true, jid, displayName: chat.display_name, phone: chat.phone, fiscal };
     } catch (e) {
       return reply.status(503).send({ ok: false, error: "IA no disponible: " + (e as Error).message });
     }

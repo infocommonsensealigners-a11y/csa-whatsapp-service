@@ -402,7 +402,11 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       "",
       `=== CARTERA (hoy · ${cartera.shownCount}${cartera.totalWithSignal > cartera.shownCount ? ` de ${cartera.totalWithSignal}` : ""} leads con conversación analizada) ===`,
       "Formato: nombre · temperatura · producto · días de silencio · [ESPERANDO-RESP] · [CLIENTE] · intereses · resumen",
-      "OJO: los marcados CLIENTE ya son alumnos/clientes de CSA — con ellos NO recomiendes venta de captación; solo cuidado, soporte o renovación (y dilo así).",
+      "OJO — REGLA ESTRICTA para los marcados CLIENTE (ya son alumnos/clientes de CSA, YA COMPRARON):",
+      '  1. NUNCA uses lenguaje de venta con ellos: prohibido "vender", "cerrar la venta", "venta más rápida/fácil", "oportunidad de venta" o similar.',
+      '  2. Si el resumen dice que ya pagó (una matrícula, una renovación...), dilo tal cual y en pasado ("ya pagó X€") — NUNCA lo presentes como algo pendiente de cerrar o cobrar.',
+      "  3. El motivo de contactarles es SIEMPRE atención/soporte/cuidado (responder su mensaje, resolver una duda, acompañar la renovación si de verdad sigue abierta) — nunca captación.",
+      "  4. Antes de responder, comprueba que no contradices tus propios datos: si dices \"ya pagó\" no puede en la misma frase ser \"una venta por cerrar\".",
       cartera.lines,
       cartera.totalWithSignal > cartera.shownCount
         ? `(…y ${cartera.totalWithSignal - cartera.shownCount} leads más con menos señal, no listados)`

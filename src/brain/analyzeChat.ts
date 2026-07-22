@@ -12,6 +12,7 @@
 import { getDb } from "../db/db";
 import { getSupabase, brainConfigured } from "./supabase";
 import { runJson, bulkModel } from "../ai/agent";
+import { fetchExistingChatIntel, mergeAiFields } from "./chatIntelMerge";
 
 type Msg = { from_me: number; ts: number; type: string; text: string | null };
 type Ai = {
@@ -180,25 +181,33 @@ export async function analyzeChat(jid: string): Promise<AnalyzeResult> {
   if ((ai.categoria ?? "").toLowerCase() === "cliente" && !etiquetas.some((e) => String(e).toLowerCase() === "cliente")) {
     etiquetas.unshift("cliente");
   }
+
+  // FUSIÓN ADITIVA: nunca se sobreescribe un resumen/temperatura/interés/
+  // etiqueta ya guardado con un valor vacío de este análisis — solo se suma.
+  const existing = await fetchExistingChatIntel(jid);
+  const merged = mergeAiFields(existing, {
+    producto: ai.producto_mencionado ?? null,
+    temperatura: ai.temperatura ?? null,
+    temperatura_motivo: ai.temperatura_motivo ?? null,
+    resumen: ai.resumen ?? null,
+    intereses: ai.intereses ?? null,
+    etiquetas: etiquetas.length ? etiquetas : null,
+  });
+
   const record = {
     jid,
     phone: meta.phone ?? null,
     display_name: (leadName || meta.display_name) ?? null,
     source_row: sourceRow,
-    producto: ai.producto_mencionado ?? null,
     first_ts,
     last_ts,
     msg_count: msgs.length,
     from_me_count,
-    temperatura: ai.temperatura ?? null,
-    temperatura_motivo: ai.temperatura_motivo ?? null,
-    resumen: ai.resumen ?? null,
-    intereses: ai.intereses ?? null,
     intervalos: iv,
-    etiquetas: etiquetas.length ? etiquetas : null,
     model: bulkModel,
     generation: 1,
     updated_at: new Date().toISOString(),
+    ...merged,
   };
 
   const sb = getSupabase();

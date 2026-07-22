@@ -65,8 +65,11 @@ async function ensureAvatar(jid: string): Promise<string | null> {
       }
       const res = await fetch(url);
       if (!res.ok) {
+        // Fallo puntual DESCARGANDO la imagen (no "sin foto"): nunca debe
+        // devolver null si ya había una foto buena cacheada — se sirve esa
+        // (regla: la foto solo se suma/actualiza, nunca desaparece).
         negativeCache.set(jid, Date.now());
-        return null;
+        return row?.avatar_path && fs.existsSync(row.avatar_path) ? row.avatar_path : null;
       }
       const buf = Buffer.from(await res.arrayBuffer());
       const file = avatarFile(jid);

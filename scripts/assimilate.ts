@@ -17,6 +17,7 @@ import Database from "better-sqlite3";
 import { config } from "../src/config";
 import { getSupabase } from "../src/brain/supabase";
 import { runJson, bulkModel } from "../src/ai/agent";
+import { fetchExistingChatIntel, mergeAiFields } from "../src/brain/chatIntelMerge";
 
 // ---------- flags ----------
 const argv = process.argv.slice(2);
@@ -206,25 +207,32 @@ for (let i = 0; i < total; i++) {
     }
   }
 
+  // FUSIÓN ADITIVA: si la IA falló o vino parcial, NUNCA pisa un resumen/
+  // temperatura/interés/etiqueta ya guardado — solo se suma (regla del usuario).
+  const existing = await fetchExistingChatIntel(r.chat_jid);
+  const merged = mergeAiFields(existing, {
+    producto: ai?.producto_mencionado ?? null,
+    temperatura: ai?.temperatura ?? null,
+    temperatura_motivo: ai?.temperatura_motivo ?? null,
+    resumen: ai?.resumen ?? null,
+    intereses: ai?.intereses ?? null,
+    etiquetas: ai?.etiquetas ?? null,
+  });
+
   const record = {
     jid: r.chat_jid,
     phone: meta?.phone ?? null,
     display_name: (lead?.name || meta?.display_name) ?? null,
     source_row: link?.source_row ?? null,
-    producto: ai?.producto_mencionado ?? null,
     first_ts: r.first_ts,
     last_ts: r.last_ts,
     msg_count: r.msg_count,
     from_me_count: r.from_me_count ?? 0,
-    temperatura: ai?.temperatura ?? null,
-    temperatura_motivo: ai?.temperatura_motivo ?? null,
-    resumen: ai?.resumen ?? null,
-    intereses: ai?.intereses ?? null,
     intervalos: iv,
-    etiquetas: ai?.etiquetas ?? null,
     model: MODEL,
     generation: 1,
     updated_at: new Date().toISOString(),
+    ...merged,
   };
 
   const { error } = await sb.from("chat_intel").upsert(record, { onConflict: "jid" });
@@ -234,7 +242,7 @@ for (let i = 0; i < total; i++) {
     console.log(`✗ [${i + 1}/${total}] ${name} — Supabase: ${error.message}`);
   } else if (!ai) {
     fail++; failed.push(r.chat_jid);
-    console.log(`△ [${i + 1}/${total}] ${name} — stats guardadas, IA falló`);
+    console.log(`△ [${i + 1}/${total}] ${name} — stats guardadas, IA falló (lo anterior se conserva intacto)`);
   } else {
     ok++;
     console.log(`✓ [${i + 1}/${total}] ${name} — ${tag} · ${r.msg_count} msgs`);

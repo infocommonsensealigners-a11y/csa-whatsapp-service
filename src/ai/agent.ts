@@ -2,10 +2,22 @@
  * Capa IA sobre el Claude Agent SDK, usando la SUSCRIPCIÓN de Claude Code
  * (sin ANTHROPIC_API_KEY). Solo texto: allowedTools vacío, un turno.
  * Validado en scripts/test-agent-sdk.ts.
+ *
+ * CONSUMO: cada llamada real registra sus tokens/coste-equivalente (kind
+ * ai_usage) — es el ÚNICO punto que habla con Claude, así que esto captura
+ * el consumo de Fransua al completo. Además, aprovechando la MISMA sesión ya
+ * abierta (nunca gastando una consulta aparte), se pide de vez en cuando el
+ * estado de la cuenta (ventanas 5h/7d de claude.ai) vía la API experimental
+ * del SDK — acotado a como mucho 1 vez cada 15 min (ver brain/usage.ts).
+ * Ninguno de los dos bloquea ni puede romper la respuesta real a Fran.
  */
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config";
 import { ensureClaudeAuth } from "../brain/secrets";
+import { logUsage, logAccountSnapshot } from "../brain/usage";
+
+const ACCOUNT_SNAPSHOT_MIN_INTERVAL_MS = 15 * 60_000;
+let lastAccountSnapshotAt = 0;
 
 /** Ejecuta un prompt de un turno y devuelve el texto final del modelo. */
 export async function runText(prompt: string, model?: string): Promise<string> {
@@ -24,6 +36,18 @@ export async function runText(prompt: string, model?: string): Promise<string> {
     },
   });
 
+  // El snapshot de cuenta hay que PEDIRLO YA (concurrente con el consumo del
+  // turno): el transporte del SDK se cierra en cuanto el for-await termina —
+  // pedirlo después llega tarde ("ProcessTransport is not ready for writing").
+  let accountSnapshotPromise: Promise<any> | null = null;
+  if (Date.now() - lastAccountSnapshotAt > ACCOUNT_SNAPSHOT_MIN_INTERVAL_MS) {
+    lastAccountSnapshotAt = Date.now();
+    const anyQ = q as any;
+    if (typeof anyQ.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET === "function") {
+      accountSnapshotPromise = anyQ.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET().catch(() => null);
+    }
+  }
+
   let resultText = "";
   let assistantText = "";
   for await (const msg of q as AsyncIterable<any>) {
@@ -33,8 +57,38 @@ export async function runText(prompt: string, model?: string): Promise<string> {
       }
     } else if (msg.type === "result") {
       resultText = msg.result ?? "";
+      const u = msg.usage;
+      if (u) {
+        void logUsage({
+          at: new Date().toISOString(),
+          model: model ?? null,
+          inputTokens: u.input_tokens ?? 0,
+          outputTokens: u.output_tokens ?? 0,
+          cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
+          cacheReadTokens: u.cache_read_input_tokens ?? 0,
+          costUsd: typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0,
+        });
+      }
     }
   }
+
+  if (accountSnapshotPromise) {
+    void accountSnapshotPromise.then((u) => {
+      if (!u) return;
+      void logAccountSnapshot({
+        capturedAt: new Date().toISOString(),
+        subscriptionType: u.subscription_type ?? null,
+        rateLimitsAvailable: !!u.rate_limits_available,
+        fiveHour: u.rate_limits?.five_hour
+          ? { utilization: u.rate_limits.five_hour.utilization ?? null, resetsAt: u.rate_limits.five_hour.resets_at ?? null }
+          : null,
+        sevenDay: u.rate_limits?.seven_day
+          ? { utilization: u.rate_limits.seven_day.utilization ?? null, resetsAt: u.rate_limits.seven_day.resets_at ?? null }
+          : null,
+      });
+    });
+  }
+
   return (resultText || assistantText).trim();
 }
 

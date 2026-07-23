@@ -23,6 +23,7 @@ import { getBusinessSnapshot } from "../brain/businessSnapshot";
 import { getSupabase, brainConfigured } from "../brain/supabase";
 import { createAgendaEvent } from "../brain/agenda";
 import { logActionAudit } from "../brain/audit";
+import { storeLeccion } from "../brain/lecciones";
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -276,11 +277,31 @@ function buildWriteTools(actor: string) {
     }
   );
 
-  return [crearEvento, crearRecordatorio, crearAviso];
+  const aprender = tool(
+    "aprender",
+    "Guarda una LECCIÓN duradera para no repetir un fallo o servir mejor a Fran. Úsala cuando: Fran te CORRIGE o te dice que te equivocaste; Fran te ENSEÑA un dato/regla del negocio o una preferencia suya; o reconoces un fallo propio. NO la uses para charla normal ni datos efímeros de un lead. Escribe la lección como una REGLA para el futuro (p.ej. 'Verifica con las herramientas antes de afirmar que un lead está en una lista').",
+    {
+      leccion: z.string().describe("la lección, concisa y en imperativo (regla para el futuro)"),
+      contexto: z.string().optional().describe("de qué venía (opcional, 1 frase)"),
+    },
+    async (args: { leccion: string; contexto?: string }) => {
+      const r = await storeLeccion({ leccion: args.leccion, contexto: args.contexto ?? null, actor, origen: "tool" });
+      if (!r.ok) return txt("No pude guardar la lección: " + (r.error ?? "error"));
+      void logActionAudit({ actor, action_type: "aprender", params: { leccion: args.leccion }, result: "ok" });
+      return txt(`Aprendido. Lo tendré en cuenta a partir de ahora: «${args.leccion}».`);
+    }
+  );
+
+  return [crearEvento, crearRecordatorio, crearAviso, aprender];
 }
 
 const READ_TOOL_NAMES = ["mcp__fransua__ficha_lead", "mcp__fransua__foto_negocio", "mcp__fransua__buscar_leads"];
-const WRITE_TOOL_NAMES = ["mcp__fransua__crear_evento_agenda", "mcp__fransua__crear_recordatorio", "mcp__fransua__crear_aviso"];
+const WRITE_TOOL_NAMES = [
+  "mcp__fransua__crear_evento_agenda",
+  "mcp__fransua__crear_recordatorio",
+  "mcp__fransua__crear_aviso",
+  "mcp__fransua__aprender",
+];
 
 export interface AgentRun {
   text: string;

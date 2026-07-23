@@ -29,6 +29,7 @@ import { logActionAudit } from "../../brain/audit";
 import { getEstrategiaCSA } from "../../brain/estrategia";
 import { runAgent, agentModel } from "../../ai/agentTools";
 import { runLearning } from "../../brain/learning";
+import { getLeccionesTexto, extractAndStoreLessons, listLecciones } from "../../brain/lecciones";
 import type { FastifyRequest } from "fastify";
 
 
@@ -427,7 +428,10 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const body = (req.body ?? {}) as { question?: string; history?: Array<{ role: string; content: string }> };
     const question = String(body.question ?? "").trim();
     if (!question) return reply.status(400).send({ ok: false, error: "question vacía" });
-    const estrategia = await getEstrategiaCSA().catch(() => "");
+    const [estrategia, lecciones] = await Promise.all([
+      getEstrategiaCSA().catch(() => ""),
+      getLeccionesTexto().catch(() => ""),
+    ]);
     const ahora = new Date();
     const off = madridOffset(ahora);
     const hoyISO = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit" }).format(ahora);
@@ -448,6 +452,14 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       "- ficha_lead(telefono): ficha 360 de UN lead (estado CRM, producto, propuesta/venta, si es alumno).",
       "- buscar_leads(texto): leads que coinciden con un tema/campaña/interés, CON su nº de fila (sourceRow) y teléfono.",
       "Con quien YA es cliente/alumno: nunca lenguaje de venta; atención/renovación.",
+      "",
+      "RIGOR (IMPORTANTE): NO afirmes cruces de datos (que un lead está en tal lista, que dijo tal cosa, que",
+      "encaja en tal estado) por intuición. VERIFÍCALO antes con las herramientas; si no puedes verificarlo,",
+      "dilo con franqueza en vez de darlo por bueno. Más vale «déjame comprobarlo» que un dato inventado.",
+      "",
+      "APRENDER — tienes la herramienta aprender(leccion): si Fran te CORRIGE, te ENSEÑA algo del negocio o de",
+      "sus preferencias, o reconoces que te equivocaste, LLÁMALA para guardarlo y no repetir el fallo. Hazlo en",
+      "el mismo turno en que ocurre, además de responder a Fran.",
       "",
       "HERRAMIENTAS DE ACCIÓN — puedes CREAR cosas para Fran (no solo leer). Aparecen en su agenda del dashboard",
       "y en su Google Calendar (le llegan al iPhone):",
@@ -471,6 +483,8 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       '[[VISTA_CRM]]{"titulo":"descripción corta de la vista","sourceRows":[<solo los nº de fila REALES que te dio buscar_leads, sin inventar>]}',
       "Incluye solo leads con nº de fila; si ninguno lo tiene, NO añadas la línea y dilo. No añadas el trailer si no te piden abrir/ver/filtrar en el CRM.",
       "",
+      lecciones,
+      "",
       estrategia,
       "",
       "FORMATO: español de España, directo y BREVE (Fran lo lee en una ventana pequeña mientras trabaja).",
@@ -482,10 +496,21 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     try {
       const r = await runAgent(prompt, agentModel, actorFrom(req));
       if (!r.text) return reply.status(503).send({ ok: false, error: "IA no disponible ahora mismo." });
+      // APRENDIZAJE por interacción (async, best-effort): si en este intercambio
+      // Fran corrigió/enseñó algo, se extrae y guarda la lección para el futuro.
+      void extractAndStoreLessons(question, r.text, actorFrom(req));
       return { ok: true, answer: r.text, toolsUsed: r.toolsUsed };
     } catch (e) {
       return reply.status(502).send({ ok: false, error: "IA no disponible", message: (e as Error).message });
     }
+  });
+
+  // LECCIONES aprendidas por Fransua (kind='leccion') — para UI/depuración.
+  app.get("/intel/lecciones", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const limit = Math.min(Number((req.query as any)?.limit) || 30, 100);
+    const items = await listLecciones(limit);
+    return { ok: true, items };
   });
 
   // BUCLE DE APRENDIZAJE (idea 5): Fransua mira las MÉTRICAS DE RESULTADO reales

@@ -16,6 +16,7 @@ import { getDb } from "../../db/db";
 import { runText, runJson, suggestModel } from "../../ai/agent";
 import { analyzeChat } from "../../brain/analyzeChat";
 import { getPlanContext } from "../../brain/plan";
+import { ESTRATEGIA_CSA } from "../../brain/estrategia";
 
 const STRATEGY_SINCE = "2025-04-01";
 const COLS =
@@ -265,13 +266,15 @@ export function registerIntelRoutes(app: FastifyInstance): void {
 
     const prompt = `Eres Fransua, el asistente del comercial de Common Sense Aligners (CSA). CSA vende FORMACIÓN a dentistas (programa SBA — Sistema de Biomecánica Avanzada); NO es una clínica y los leads son profesionales de la odontología.
 
+${ESTRATEGIA_CSA}
+
 ${planTexto ? planTexto + "\n" : ""}
 Conversación de WhatsApp entre Fran (el comercial) y ${chat.display_name || "el lead"} (de más antiguo a más reciente):
 ---
 ${transcript}
 ---
 ${resumen ? `Resumen previo del lead: ${resumen}\nTemperatura: ${temperatura ?? "?"}\n` : ""}
-Redacta EL SIGUIENTE mensaje que Fran debería enviarle por WhatsApp para hacer avanzar la relación/venta de forma natural. Si hay una oferta o hito vigente este mes que encaje con este lead, puedes usarlo, pero SIN inventar precios ni condiciones que no estén arriba. Requisitos: español de España, tono cercano y profesional, sin sonar a plantilla, 1-3 frases, listo para copiar y pegar. Responde ÚNICAMENTE con el texto del mensaje (sin comillas, sin explicaciones, sin firma).`;
+Redacta EL SIGUIENTE mensaje que Fran debería enviarle por WhatsApp para hacer avanzar la relación/venta de forma natural, APLICANDO la estrategia de arriba: si el lead lleva mucho en silencio reactívalo aportando valor + gancho de temporada (nunca un "¿sigues interesado?" a secas); si es un "más adelante", cierra con un próximo paso concreto y una FECHA; si acaba de entrar, sé rápido y directo. Si hay una oferta o hito vigente este mes que encaje, úsalo, pero SIN inventar precios ni condiciones que no estén arriba. Requisitos: español de España, tono cercano y profesional, sin sonar a plantilla, 1-3 frases, listo para copiar y pegar. Responde ÚNICAMENTE con el texto del mensaje (sin comillas, sin explicaciones, sin firma).`;
 
     try {
       const suggestion = (await runText(prompt, suggestModel)).replace(/^["']|["']$/g, "").trim();

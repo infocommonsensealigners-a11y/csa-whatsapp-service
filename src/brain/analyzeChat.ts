@@ -13,6 +13,7 @@ import { getDb } from "../db/db";
 import { getSupabase, brainConfigured } from "./supabase";
 import { runJson, bulkModel } from "../ai/agent";
 import { fetchExistingChatIntel, mergeAiFields } from "./chatIntelMerge";
+import { ESTRATEGIA_CSA } from "./estrategia";
 
 type Msg = { from_me: number; ts: number; type: string; text: string | null };
 type Ai = {
@@ -89,6 +90,9 @@ function buildPrompt(name: string, transcript: string, iv: ReturnType<typeof com
   return `Eres el analista de Fransua, el cerebro comercial de Common Sense Aligners (CSA). CSA NO es una clínica de pacientes: vende FORMACIÓN a dentistas y clínicas — un programa/mentoría del método de alineadores (SBA), con bloques online y sesiones presenciales. El AGENTE es el equipo comercial de CSA (Fran); el LEAD es un DENTISTA o CLÍNICA que podría inscribirse en la formación. Analiza esta conversación de WhatsApp con el lead "${name}".
 
 Contexto temporal: el lead lleva ${iv.silencio_dias} días sin actividad; el último mensaje lo envió el ${iv.ultimo_emisor}.
+
+${ESTRATEGIA_CSA}
+Usa esa estrategia para situar al lead y para que el "próximo paso" del resumen sea el correcto (p.ej. si lleva ≥30 días en silencio, el próximo paso es reactivar aportando valor, no insistir; si es un "más adelante", fijar fecha).
 
 Devuelve SOLO un objeto JSON con EXACTAMENTE estas claves:
 {

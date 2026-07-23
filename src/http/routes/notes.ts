@@ -25,6 +25,16 @@ import { brainConfigured, getSupabase } from "../../brain/supabase";
 import { runJson, runText, suggestModel } from "../../ai/agent";
 import { getPlanContext } from "../../brain/plan";
 import { getBusinessSnapshot } from "../../brain/businessSnapshot";
+import { logActionAudit } from "../../brain/audit";
+import type { FastifyRequest } from "fastify";
+
+/** Actor real de una acción: el email de sesión que el dashboard reenvía como
+ *  x-csa-user; si no llega, el `author` del cuerpo; en último caso "Fran". */
+function actorFrom(req: FastifyRequest, bodyAuthor?: string): string {
+  const h = req.headers["x-csa-user"];
+  const fromHeader = Array.isArray(h) ? h[0] : h;
+  return (fromHeader && String(fromHeader).trim()) || (bodyAuthor && String(bodyAuthor).trim()) || "Fran";
+}
 
 type NoteBody = {
   phone?: string;
@@ -336,13 +346,15 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     if (!text) return reply.status(400).send({ ok: false, error: "text vacío" });
     const sb = getSupabase();
     const sourceRow = Number.isFinite(body.sourceRow) ? Number(body.sourceRow) : null;
+    const actor = actorFrom(req, body.author);
+    const evento = body.evento || "estado";
     const { error } = await sb.from("fransua_log").insert({
       kind: "event",
       source_row: sourceRow,
       payload: {
         at: new Date().toISOString(),
-        author: body.author || "Sistema",
-        evento: body.evento || "estado",
+        author: actor,
+        evento,
         text,
         phone: canonPhone(body.phone) || null,
         jid: body.jid ?? null,
@@ -350,7 +362,44 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       },
     });
     if (error) return reply.status(502).send({ ok: false, error: error.message });
+    // AUDITORÍA: el evento (p.ej. cambio de estado hecho desde el dashboard) es una
+    // acción → queda también en el rastro de acciones, con el actor real.
+    void logActionAudit({
+      actor,
+      action_type: evento === "estado" ? "cambiar_estado" : evento,
+      params: { text },
+      result: "ok",
+      sourceRow,
+      jid: body.jid ?? null,
+      phone: canonPhone(body.phone) || null,
+      name: body.name ?? null,
+    });
     return { ok: true };
+  });
+
+  // AUDITORÍA de acciones (idea 4): rastro unificado de todo lo que se ejecutó
+  // con aprobación (agendar, cambiar estado…) — quién, qué, cuándo. Filtrable por
+  // lead (?sourceRow=). Es el "log de eventos" que the dashboard puede mostrar.
+  app.get("/intel/audit", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const q = req.query as any;
+    const sourceRow = Number(q?.sourceRow);
+    const limit = Math.min(Number(q?.limit) || 100, 500);
+    const sb = getSupabase();
+    let query = sb.from("fransua_log").select("payload,source_row,created_at").eq("kind", "action_audit").order("created_at", { ascending: false }).limit(limit);
+    if (Number.isFinite(sourceRow)) query = query.eq("source_row", sourceRow);
+    const { data, error } = await query;
+    if (error) return reply.status(502).send({ ok: false, error: error.message });
+    const items = (data ?? []).map((r: any) => ({
+      at: r.payload?.at ?? r.created_at,
+      actor: r.payload?.actor ?? "?",
+      action: r.payload?.action_type ?? "?",
+      params: r.payload?.params ?? null,
+      result: r.payload?.result ?? null,
+      sourceRow: r.source_row,
+      name: r.payload?.name ?? null,
+    }));
+    return { ok: true, items };
   });
 
   // CHAT con Fransua sobre la cartera: Fran pregunta ("¿a quién llamo hoy?",
@@ -437,20 +486,55 @@ export function registerNoteRoutes(app: FastifyInstance): void {
   // quien tiene las credenciales del Sheet).
   app.post("/intel/note/confirm", async (req, reply) => {
     if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
-    const body = (req.body ?? {}) as { type?: string; titulo?: string; en_dias?: number; sourceRow?: number; jid?: string };
+    const body = (req.body ?? {}) as {
+      type?: string; titulo?: string; en_dias?: number; sourceRow?: number; jid?: string; phone?: string; name?: string; author?: string;
+    };
     if (body.type !== "reminder") return reply.status(400).send({ ok: false, error: "tipo no soportado aquí" });
     if (!body.titulo) return reply.status(400).send({ ok: false, error: "titulo requerido" });
+    const actor = actorFrom(req, body.author);
     const enDias = Number(body.en_dias) || 0;
     const due = new Date(Date.now() + enDias * 86400_000).toISOString();
+    const sourceRow = Number.isFinite(body.sourceRow) ? Number(body.sourceRow) : null;
     const sb = getSupabase();
+
+    // 1) Recordatorio (tabla reminders, compat con lo previo).
     const { error } = await sb.from("reminders").insert({
-      source_row: Number.isFinite(body.sourceRow) ? body.sourceRow : null,
-      jid: body.jid ?? null,
-      titulo: body.titulo,
-      due_at: due,
-      origen: "fransua",
+      source_row: sourceRow, jid: body.jid ?? null, titulo: body.titulo, due_at: due, origen: "fransua",
     });
     if (error) return reply.status(502).send({ ok: false, error: error.message });
-    return { ok: true, created: { titulo: body.titulo, due_at: due } };
+
+    // 2) AGENDAR DE VERDAD: crea el evento en la agenda (calendar_events) para que
+    //    el seguimiento sea VISIBLE en el calendario, no solo un recordatorio suelto.
+    let agendado = false;
+    try {
+      const { error: calErr } = await sb.from("calendar_events").insert({
+        titulo: `Seguimiento: ${body.titulo}`.slice(0, 300),
+        start_at: due,
+        all_day: false,
+        tipo: "seguimiento",
+        origen: "fransua",
+        source_row: sourceRow,
+        jid: body.jid ?? null,
+        status: "active",
+      });
+      agendado = !calErr;
+      if (calErr) console.warn("[confirm] no se pudo agendar el evento:", calErr.message);
+    } catch (e) {
+      console.warn("[confirm] agendar throw:", (e as Error)?.message ?? e);
+    }
+
+    // 3) AUDITORÍA: acción aprobada por Fran queda registrada (quién/qué/cuándo).
+    void logActionAudit({
+      actor,
+      action_type: "agendar",
+      params: { titulo: body.titulo, en_dias: enDias, due, agendado },
+      result: "ok",
+      sourceRow,
+      jid: body.jid ?? null,
+      phone: body.phone ?? null,
+      name: body.name ?? null,
+    });
+
+    return { ok: true, created: { titulo: body.titulo, due_at: due }, agendado, actor };
   });
 }

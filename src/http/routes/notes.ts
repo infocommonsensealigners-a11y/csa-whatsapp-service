@@ -61,6 +61,18 @@ type Interpretation = {
 
 const canonPhone = (p?: string) => (p ? String(p).replace(/\D/g, "").slice(-9) : "");
 
+/** Offset horario actual de Europe/Madrid (p.ej. "+02:00" en verano, "+01:00" en
+ *  invierno) para que Fransua construya fechas ISO correctas al agendar. */
+function madridOffset(d: Date): string {
+  try {
+    const s = d.toLocaleString("en-US", { timeZone: "Europe/Madrid", timeZoneName: "longOffset" });
+    const m = s.match(/GMT([+-]\d{2}:\d{2})/);
+    return m ? m[1] : "+01:00";
+  } catch {
+    return "+01:00";
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Foto de la cartera para /intel/ask — cacheada 60s (latencia)               */
 /* -------------------------------------------------------------------------- */
@@ -416,6 +428,10 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const question = String(body.question ?? "").trim();
     if (!question) return reply.status(400).send({ ok: false, error: "question vacía" });
     const estrategia = await getEstrategiaCSA().catch(() => "");
+    const ahora = new Date();
+    const off = madridOffset(ahora);
+    const hoyISO = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit" }).format(ahora);
+    const hoyLegible = ahora.toLocaleString("es-ES", { timeZone: "Europe/Madrid", weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
     const hist = (body.history ?? [])
       .slice(-6)
       .map((m) => `${m.role === "assistant" ? "Fransua" : "Fran"}: ${String(m.content).slice(0, 800)}`)
@@ -424,11 +440,29 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       "Eres Fransua, el cerebro comercial de Common Sense Aligners (CSA), que VENDE FORMACIÓN a dentistas",
       "(programa SBA, certificación, mentoría, estancia clínica) — NO trata pacientes. Respondes a Fran, el comercial.",
       "",
+      `CONTEXTO TEMPORAL: HOY es ${hoyLegible} (hora de Madrid). Fecha de hoy en ISO: ${hoyISO}.`,
+      `Para las fechas ISO de las herramientas usa la zona ${off} (Europe/Madrid). Ej.: "mañana a las 10:00" → "${hoyISO}T10:00:00${off}" pero del día siguiente.`,
+      "",
       "Tienes HERRAMIENTAS para consultar DATOS EN VIVO — úsalas cuando la pregunta las necesite, no inventes:",
       "- foto_negocio(): estado global de la cartera hoy (embudo, cola, base a reactivar, renovaciones, ventas, alumnos).",
       "- ficha_lead(telefono): ficha 360 de UN lead (estado CRM, producto, propuesta/venta, si es alumno).",
       "- buscar_leads(texto): leads que coinciden con un tema/campaña/interés, CON su nº de fila (sourceRow) y teléfono.",
       "Con quien YA es cliente/alumno: nunca lenguaje de venta; atención/renovación.",
+      "",
+      "HERRAMIENTAS DE ACCIÓN — puedes CREAR cosas para Fran (no solo leer). Aparecen en su agenda del dashboard",
+      "y en su Google Calendar (le llegan al iPhone):",
+      "- crear_evento_agenda(titulo, cuando, ...): una cita/llamada/formación/reunión con fecha y HORA.",
+      "- crear_recordatorio(titulo, cuando, ...): un seguimiento ('vuelve a llamar a X el viernes').",
+      "- crear_aviso(titulo, cuando?, ...): una notificación/alerta puntual para Fran (si no hay fecha, es para hoy).",
+      "Si la acción es sobre un lead concreto, primero halla su nº de fila con buscar_leads y pásalo como lead_fila.",
+      "",
+      "REGLA DE ORO al crear: NO inventes datos. Un evento/recordatorio NECESITA un título claro y un CUÁNDO",
+      "(fecha y, para citas/llamadas, la hora). Si Fran no te ha dado la fecha/hora, o no sabes a qué lead se refiere",
+      "cuando es ambiguo, NO llames a la herramienta: responde con UNA pregunta corta pidiendo el dato que falta.",
+      "Solo llama a la herramienta de creación cuando tengas todo. Tras crear, confirma en UNA frase lo que hiciste",
+      "(qué y cuándo). Si Fran te pide crear varias cosas, hazlas y confírmalas.",
+      "Cuando hayas CREADO algo en la agenda/recordatorio/aviso (y solo entonces), añade como ÚLTIMA línea, sin nada",
+      "después, exactamente: [[AGENDA_ACTUALIZADA]]  (para que el dashboard refresque la agenda al instante).",
       "",
       "ACCIÓN — ABRIR EL CRM CON UNA VISTA FILTRADA: si Fran te pide explícitamente VER/FILTRAR/ABRIR un",
       "conjunto de leads EN EL CRM (p.ej. «muéstrame en el CRM los que mencionan Black Friday sin compra»),",
@@ -440,13 +474,13 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       estrategia,
       "",
       "FORMATO: español de España, directo y BREVE (Fran lo lee en una ventana pequeña mientras trabaja).",
-      "Arranca con el titular/respuesta; si son acciones, lista corta con nombres; máx ~130 palabras (la línea [[VISTA_CRM]] no cuenta).",
+      "Arranca con el titular/respuesta; si son acciones, lista corta con nombres; máx ~130 palabras (las líneas [[...]] no cuentan).",
       "",
       hist ? "=== CONVERSACIÓN PREVIA ===\n" + hist + "\n" : "",
       `Fran: ${question}`,
     ].filter(Boolean).join("\n");
     try {
-      const r = await runAgent(prompt, agentModel);
+      const r = await runAgent(prompt, agentModel, actorFrom(req));
       if (!r.text) return reply.status(503).send({ ok: false, error: "IA no disponible ahora mismo." });
       return { ok: true, answer: r.text, toolsUsed: r.toolsUsed };
     } catch (e) {

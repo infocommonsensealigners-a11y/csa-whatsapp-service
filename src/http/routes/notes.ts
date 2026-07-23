@@ -26,7 +26,26 @@ import { runJson, runText, suggestModel } from "../../ai/agent";
 import { getPlanContext } from "../../brain/plan";
 import { getBusinessSnapshot } from "../../brain/businessSnapshot";
 import { logActionAudit } from "../../brain/audit";
+import { getEstrategiaCSA } from "../../brain/estrategia";
+import { config } from "../../config";
 import type { FastifyRequest } from "fastify";
+
+/** Pide al dashboard las métricas de resultado (idea 5), con token compartido. */
+async function fetchLearningMetrics(): Promise<string | null> {
+  const token = process.env.FRANSUA_INTERNAL_TOKEN;
+  if (!token) return null;
+  try {
+    const res = await fetch(`${config.dashboardUrl}/api/fransua/learning-metrics`, {
+      headers: { "x-fransua-token": token },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const j = (await res.json()) as { ok?: boolean; texto?: string };
+    return j?.ok && typeof j.texto === "string" ? j.texto : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Actor real de una acción: el email de sesión que el dashboard reenvía como
  *  x-csa-user; si no llega, el `author` del cuerpo; en último caso "Fran". */
@@ -400,6 +419,72 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       name: r.payload?.name ?? null,
     }));
     return { ok: true, items };
+  });
+
+  // BUCLE DE APRENDIZAJE (idea 5): Fransua mira las MÉTRICAS DE RESULTADO reales
+  // (embudo/ventas/ciclo/motivos, del dashboard) + la ESTRATEGIA actual y PROPONE
+  // ajustes fundados en datos (con confianza). NO cambia nada solo — son
+  // propuestas que Miguel/Fran aplican en el editor de Estrategia (idea 1 las
+  // propaga a Fransua). Se guarda en fransua_log kind='learning'.
+  app.get("/intel/learn", async (_req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from("fransua_log")
+      .select("payload,created_at")
+      .eq("kind", "learning")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) return reply.status(502).send({ ok: false, error: error.message });
+    if (!data) return { ok: true, found: false };
+    return { ok: true, found: true, generatedAt: data.created_at, ...(data.payload as Record<string, unknown>) };
+  });
+
+  app.post("/intel/learn", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const [metricas, estrategia] = await Promise.all([fetchLearningMetrics(), getEstrategiaCSA()]);
+    if (!metricas) return reply.status(502).send({ ok: false, error: "no se pudieron leer las métricas del dashboard" });
+
+    const prompt = [
+      "Eres Fransua, el cerebro comercial de Common Sense Aligners (CSA), que vende FORMACIÓN de alto",
+      "ticket a dentistas. Tienes las MÉTRICAS DE RESULTADO reales y la ESTRATEGIA actual. Con criterio",
+      "de venta de alto ticket, propón AJUSTES CONCRETOS de la estrategia que mejorarían el resultado,",
+      "PERO solo si los datos lo respaldan: si una muestra es pequeña (n bajo) o no hay datos, dilo y NO",
+      "propongas cambiarla. No inventes cifras que no estén abajo.",
+      "",
+      metricas,
+      "",
+      "=== ESTRATEGIA ACTUAL (estos son los valores vigentes que podrías sugerir ajustar) ===",
+      estrategia,
+      "",
+      "Devuelve SOLO un objeto JSON con esta forma EXACTA:",
+      "{",
+      '  "resumen": "1-2 frases: qué dicen los datos ahora mismo",',
+      '  "insights": ["observaciones concretas basadas en las métricas (máx 5)"],',
+      '  "propuestas": [{"param":"dormido|speed-to-lead|cadencia|renovacion|otro","actual":"valor/estado actual","sugerido":"cambio propuesto","porque":"la evidencia en los datos","confianza":"alta|media|baja"}]',
+      "}",
+      "Si no hay evidencia suficiente para ninguna propuesta, devuelve propuestas: [] y dilo en el resumen.",
+    ].join("\n");
+
+    let out: { resumen?: string; insights?: unknown; propuestas?: unknown } | null = null;
+    try {
+      out = await runJson(prompt, askModel);
+    } catch (e) {
+      return reply.status(502).send({ ok: false, error: "IA no disponible", message: (e as Error).message });
+    }
+    if (!out) return reply.status(502).send({ ok: false, error: "la IA no devolvió un análisis válido" });
+
+    const payload = {
+      at: new Date().toISOString(),
+      resumen: typeof out.resumen === "string" ? out.resumen : "",
+      insights: Array.isArray(out.insights) ? out.insights.slice(0, 8) : [],
+      propuestas: Array.isArray(out.propuestas) ? out.propuestas.slice(0, 10) : [],
+    };
+    const sb = getSupabase();
+    const { error } = await sb.from("fransua_log").insert({ kind: "learning", payload });
+    if (error) return reply.status(502).send({ ok: false, error: error.message });
+    return { ok: true, ...payload };
   });
 
   // CHAT con Fransua sobre la cartera: Fran pregunta ("¿a quién llamo hoy?",

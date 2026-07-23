@@ -27,6 +27,7 @@ import { getPlanContext } from "../../brain/plan";
 import { getBusinessSnapshot } from "../../brain/businessSnapshot";
 import { logActionAudit } from "../../brain/audit";
 import { getEstrategiaCSA } from "../../brain/estrategia";
+import { runAgent, agentModel } from "../../ai/agentTools";
 import { config } from "../../config";
 import type { FastifyRequest } from "fastify";
 
@@ -419,6 +420,46 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       name: r.payload?.name ?? null,
     }));
     return { ok: true, items };
+  });
+
+  // FRANSUA AGÉNTICO (idea 2b): chat abierto donde Fransua DECIDE qué consultar
+  // con herramientas read-only (foto_negocio, ficha_lead) en bucle multi-turno.
+  // Para preguntas abiertas de Fran ("¿cómo va todo?", "¿qué pasa con Gemma?").
+  // Solo lectura (no ejecuta acciones — eso es idea 4, con aprobación).
+  app.post("/intel/agent", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const body = (req.body ?? {}) as { question?: string; history?: Array<{ role: string; content: string }> };
+    const question = String(body.question ?? "").trim();
+    if (!question) return reply.status(400).send({ ok: false, error: "question vacía" });
+    const estrategia = await getEstrategiaCSA().catch(() => "");
+    const hist = (body.history ?? [])
+      .slice(-6)
+      .map((m) => `${m.role === "assistant" ? "Fransua" : "Fran"}: ${String(m.content).slice(0, 800)}`)
+      .join("\n");
+    const prompt = [
+      "Eres Fransua, el cerebro comercial de Common Sense Aligners (CSA), que VENDE FORMACIÓN a dentistas",
+      "(programa SBA, certificación, mentoría, estancia clínica) — NO trata pacientes. Respondes a Fran, el comercial.",
+      "",
+      "Tienes HERRAMIENTAS para consultar DATOS EN VIVO — úsalas cuando la pregunta las necesite, no inventes:",
+      "- foto_negocio(): estado global de la cartera hoy (embudo, cola, base a reactivar, renovaciones, ventas, alumnos).",
+      "- ficha_lead(telefono): ficha 360 de UN lead (estado CRM, producto, propuesta/venta, si es alumno).",
+      "Con quien YA es cliente/alumno: nunca lenguaje de venta; atención/renovación.",
+      "",
+      estrategia,
+      "",
+      "FORMATO: español de España, directo y BREVE (Fran lo lee en una ventana pequeña mientras trabaja).",
+      "Arranca con el titular/respuesta; si son acciones, lista corta con nombres; máx ~130 palabras.",
+      "",
+      hist ? "=== CONVERSACIÓN PREVIA ===\n" + hist + "\n" : "",
+      `Fran: ${question}`,
+    ].filter(Boolean).join("\n");
+    try {
+      const r = await runAgent(prompt, agentModel);
+      if (!r.text) return reply.status(503).send({ ok: false, error: "IA no disponible ahora mismo." });
+      return { ok: true, answer: r.text, toolsUsed: r.toolsUsed };
+    } catch (e) {
+      return reply.status(502).send({ ok: false, error: "IA no disponible", message: (e as Error).message });
+    }
   });
 
   // BUCLE DE APRENDIZAJE (idea 5): Fransua mira las MÉTRICAS DE RESULTADO reales

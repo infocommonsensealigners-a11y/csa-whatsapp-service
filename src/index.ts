@@ -9,6 +9,8 @@ import { emitSse } from "./http/sse";
 import { registerIngest } from "./wa/ingest";
 import { startWhatsapp, stopWhatsapp, onStateChange } from "./wa/socket";
 import { ensureClaudeAuth } from "./brain/secrets";
+import { startLeadLinkingScheduler } from "./brain/linkLeadsScheduler";
+import { startLearningScheduler } from "./brain/learning";
 
 async function main(): Promise<void> {
   ensureDataDirs();
@@ -55,6 +57,22 @@ async function main(): Promise<void> {
     console.log("[wa] WA_CONNECT=off → Baileys NO se conecta (modo solo lectura).");
   }
   await startHttpServer();
+
+  // Matching WhatsApp↔CRM periódico (ver src/brain/linkLeadsScheduler.ts) — no
+  // debe poder tumbar el arranque si el dashboard no responde todavía.
+  try {
+    startLeadLinkingScheduler();
+  } catch (e) {
+    console.error("[link-leads] no se pudo arrancar el matching automático:", (e as Error).message);
+  }
+
+  // Bucle de aprendizaje (idea 5): re-analiza resultados y refresca las propuestas
+  // de ajuste de estrategia solo (semanal). Best-effort — nunca tumba el arranque.
+  try {
+    startLearningScheduler();
+  } catch (e) {
+    console.error("[learn] no se pudo arrancar el aprendizaje automático:", (e as Error).message);
+  }
 
   console.log(`[http] Sidecar WhatsApp escuchando en http://${config.host}:${config.port}`);
   console.log("[info] Servicio de SOLO LECTURA: este proceso no puede publicar en WhatsApp.");

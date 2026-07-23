@@ -24,6 +24,7 @@ import type { FastifyInstance } from "fastify";
 import { brainConfigured, getSupabase } from "../../brain/supabase";
 import { runJson, runText, suggestModel } from "../../ai/agent";
 import { getPlanContext } from "../../brain/plan";
+import { getBusinessSnapshot } from "../../brain/businessSnapshot";
 
 type NoteBody = {
   phone?: string;
@@ -370,10 +371,12 @@ export function registerNoteRoutes(app: FastifyInstance): void {
 
     let cartera: AskCartera;
     let planTexto: string | null;
+    let negocio: string | null;
     try {
-      [cartera, planTexto] = await Promise.all([
+      [cartera, planTexto, negocio] = await Promise.all([
         getAskCartera(),
         getPlanContext().then((p) => p.texto).catch(() => null),
+        getBusinessSnapshot().catch(() => null),
       ]);
     } catch (e) {
       return reply.status(502).send({ ok: false, error: (e as Error).message });
@@ -400,6 +403,7 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       "",
       planTexto || "",
       "",
+      negocio ? negocio + "\n" : "",
       `=== CARTERA (hoy · ${cartera.shownCount}${cartera.totalWithSignal > cartera.shownCount ? ` de ${cartera.totalWithSignal}` : ""} leads con conversación analizada) ===`,
       "Formato: nombre · temperatura · producto · días de silencio · [ESPERANDO-RESP] · [CLIENTE] · intereses · resumen",
       "OJO — REGLA ESTRICTA para los marcados CLIENTE (ya son alumnos/clientes de CSA, YA COMPRARON):",

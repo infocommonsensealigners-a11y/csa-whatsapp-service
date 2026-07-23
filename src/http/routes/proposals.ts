@@ -25,6 +25,13 @@ export interface ProposalRea {
   d: string;
 }
 export type ProposalStarBlock = "biomecanica" | "revision" | "tecnicas" | "estancia";
+export type ProposalAvisoCampo = "drNombre" | "hero" | "starBlock" | "needs" | "rea" | "fechas" | "general";
+
+export interface ProposalAviso {
+  campo: ProposalAvisoCampo;
+  indice: number | null;
+  mensaje: string;
+}
 
 export interface ExtractedProposal {
   drNombre: string;
@@ -38,7 +45,7 @@ export interface ExtractedProposal {
   planDescOverride: string | null;
   fechasOverride: string[] | null;
   confianza: "alta" | "media" | "baja";
-  avisos: string[];
+  avisos: ProposalAviso[];
 }
 
 const SCHEMA_KEYS = [
@@ -61,7 +68,11 @@ REGLAS (obligatorias):
 - "starBlock": cuál de estos 4 bloques FIJOS del programa es el dolor PRINCIPAL de este doctor/a — responde exactamente uno de: "biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (Estancia clínica — más casos/marketing/equipo).
 - "giftDeadlineOverride"/"planDescOverride"/"fechasOverride": deja TODOS en null salvo que la transcripción declare EXPLÍCITAMENTE una fecha límite, condición de pago o fecha de inicio DISTINTA a la habitual del programa — nunca inventes precios, IBAN ni fechas que no se hayan dicho.
 - "confianza": "alta" si la llamada da material claro para todo lo anterior, "media" si falta algo, "baja" si la transcripción es pobre/corta.
-- "avisos": lista corta de avisos para quien revise (p. ej. "Solo se detectaron 3 needs claras", "No quedó clara la objeción de horario").
+- "avisos": lista de avisos ESTRUCTURADOS — cada uno es un objeto {campo, indice, mensaje} para que quien revise sepa EXACTAMENTE dónde mirar:
+  - "campo": uno de "drNombre" (nombre/apellido del doctor/a incompleto o dudoso), "hero" (los 2 párrafos de intro), "starBlock" (el bloque destacado elegido), "needs" (un punto de dolor concreto — usa "indice"), "rea" (una objeción concreta — usa "indice"), "fechas" (fecha límite/pago/fechas clave pendientes de confirmar), o "general" (cualquier otra cosa que no encaje).
+  - "indice": posición 0-based del elemento de "needs"/"rea" al que se refiere (null si no aplica o si "campo" no es "needs"/"rea").
+  - "mensaje": explicación breve y concreta (p. ej. "No se recogió el apellido, solo el nombre de pila", "Cita parafraseada, no es literal porque no se dijo así exactamente", "Quedó pendiente de confirmar con el Dr. Lozano, no se ha aplicado como fecha").
+  Genera UN aviso por cada cosa de la que no estés seguro/a al 100%: dato incompleto, cita no literal, información pendiente de confirmar, ambigüedad en el bloque estrella, etc. Si todo quedó claro, deja el array vacío.
 - Español de España, sin inventar datos que no estén en la transcripción. Nunca menciones precios, el IBAN ni enlaces (van fijos en la plantilla, no los tocas).
 
 TRANSCRIPCIÓN (Plaud):
@@ -99,8 +110,32 @@ function validate(obj: unknown): ExtractedProposal | null {
       ? (o.fechasOverride as unknown[]).map((f) => String(f)).filter(Boolean)
       : null,
     confianza: o.confianza === "alta" || o.confianza === "media" || o.confianza === "baja" ? o.confianza : "media",
-    avisos: Array.isArray(o.avisos) ? (o.avisos as unknown[]).map((a) => String(a)).filter(Boolean) : [],
+    avisos: parseAvisos(o.avisos),
   };
+}
+
+const AVISO_CAMPOS: ProposalAvisoCampo[] = ["drNombre", "hero", "starBlock", "needs", "rea", "fechas", "general"];
+
+/** Tolera avisos como string suelto (formato antiguo) o como objeto {campo,indice,mensaje}. */
+function parseAvisos(raw: unknown): ProposalAviso[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((a): ProposalAviso | null => {
+      if (typeof a === "string") {
+        const mensaje = a.trim();
+        return mensaje ? { campo: "general", indice: null, mensaje } : null;
+      }
+      if (a && typeof a === "object") {
+        const o = a as Record<string, unknown>;
+        const mensaje = String(o.mensaje ?? "").trim();
+        if (!mensaje) return null;
+        const campo = AVISO_CAMPOS.includes(o.campo as ProposalAvisoCampo) ? (o.campo as ProposalAvisoCampo) : "general";
+        const indice = typeof o.indice === "number" && Number.isInteger(o.indice) && o.indice >= 0 ? o.indice : null;
+        return { campo, indice, mensaje };
+      }
+      return null;
+    })
+    .filter((a): a is ProposalAviso => a !== null);
 }
 
 export interface CleanedTranscript {

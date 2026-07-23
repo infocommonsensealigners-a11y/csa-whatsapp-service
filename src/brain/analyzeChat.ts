@@ -14,6 +14,7 @@ import { getSupabase, brainConfigured } from "./supabase";
 import { runJson, bulkModel } from "../ai/agent";
 import { fetchExistingChatIntel, mergeAiFields } from "./chatIntelMerge";
 import { getEstrategiaCSA } from "./estrategia";
+import { getLeadContext360 } from "./leadContext";
 
 type Msg = { from_me: number; ts: number; type: string; text: string | null };
 type Ai = {
@@ -86,11 +87,11 @@ function buildTranscript(msgs: Msg[]): string {
   return out;
 }
 
-function buildPrompt(name: string, transcript: string, iv: ReturnType<typeof computeIntervals>, estrategia: string): string {
+function buildPrompt(name: string, transcript: string, iv: ReturnType<typeof computeIntervals>, estrategia: string, ficha360: string | null): string {
   return `Eres el analista de Fransua, el cerebro comercial de Common Sense Aligners (CSA). CSA NO es una clínica de pacientes: vende FORMACIÓN a dentistas y clínicas — un programa/mentoría del método de alineadores (SBA), con bloques online y sesiones presenciales. El AGENTE es el equipo comercial de CSA (Fran); el LEAD es un DENTISTA o CLÍNICA que podría inscribirse en la formación. Analiza esta conversación de WhatsApp con el lead "${name}".
 
 Contexto temporal: el lead lleva ${iv.silencio_dias} días sin actividad; el último mensaje lo envió el ${iv.ultimo_emisor}.
-
+${ficha360 ? "\n" + ficha360 + "\n" : ""}
 ${estrategia}
 Usa esa estrategia para situar al lead y para que el "próximo paso" del resumen sea el correcto (p.ej. si lleva bastantes días en silencio, el próximo paso es reactivar aportando valor, no insistir; si es un "más adelante", fijar fecha).
 
@@ -165,10 +166,11 @@ export async function analyzeChat(jid: string): Promise<AnalyzeResult> {
   const transcript = buildTranscript(msgs);
 
   const estrategia = await getEstrategiaCSA();
+  const ficha360 = await getLeadContext360(meta.phone);
   let ai: Ai | null = null;
   for (let attempt = 0; attempt < 2 && !ai; attempt++) {
     try {
-      ai = await runJson<Ai>(buildPrompt(name, transcript, iv, estrategia), bulkModel);
+      ai = await runJson<Ai>(buildPrompt(name, transcript, iv, estrategia, ficha360), bulkModel);
     } catch (e) {
       const m = String((e as Error)?.message ?? e);
       if (/rate|limit|429|overload|529/i.test(m)) await new Promise((r) => setTimeout(r, 4000));

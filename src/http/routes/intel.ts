@@ -17,6 +17,7 @@ import { runText, runJson, suggestModel } from "../../ai/agent";
 import { analyzeChat } from "../../brain/analyzeChat";
 import { getPlanContext } from "../../brain/plan";
 import { getEstrategiaCSA } from "../../brain/estrategia";
+import { getLeadContext360 } from "../../brain/leadContext";
 
 const STRATEGY_SINCE = "2025-04-01";
 const COLS =
@@ -264,13 +265,13 @@ export function registerIntelRoutes(app: FastifyInstance): void {
 
     const planTexto = await getPlanContext().then((p) => p.texto).catch(() => null);
     const estrategia = await getEstrategiaCSA();
+    const ficha360 = await getLeadContext360(chat.phone);
 
     const prompt = `Eres Fransua, el asistente del comercial de Common Sense Aligners (CSA). CSA vende FORMACIÓN a dentistas (programa SBA — Sistema de Biomecánica Avanzada); NO es una clínica y los leads son profesionales de la odontología.
 
 ${estrategia}
 
-${planTexto ? planTexto + "\n" : ""}
-Conversación de WhatsApp entre Fran (el comercial) y ${chat.display_name || "el lead"} (de más antiguo a más reciente):
+${planTexto ? planTexto + "\n" : ""}${ficha360 ? ficha360 + "\n\n" : ""}Conversación de WhatsApp entre Fran (el comercial) y ${chat.display_name || "el lead"} (de más antiguo a más reciente):
 ---
 ${transcript}
 ---

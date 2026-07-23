@@ -103,6 +103,39 @@ function validate(obj: unknown): ExtractedProposal | null {
   };
 }
 
+export interface CleanedTranscript {
+  resumenPuntos: string[];
+  transcripcionLimpia: string;
+}
+
+const CLEAN_SCHEMA_KEYS = ["resumenPuntos", "transcripcionLimpia"] as const;
+
+function buildCleanPrompt(transcript: string): string {
+  return `Limpia y organiza esta transcripción (Plaud) de una llamada de Common Sense Aligners (CSA, formación SBA para dentistas) para que Fran la lea cómodamente antes de generar una propuesta. NO resumas ni acortes el contenido real, NO omitas información — conserva TODO lo que se dijo. Solo:
+- Corrige errores evidentes de transcripción automática (palabras cortadas, minúsculas donde debería haber mayúscula, tildes que faltan).
+- Organiza el texto en párrafos por turno de conversación o por tema (no una sola masa de texto).
+- Si se distingue quién habla, márcalo con "Fran:" / el nombre del doctor/a o "Doctor/a:" al inicio del párrafo correspondiente.
+
+Además, extrae de 5 a 10 puntos clave (temas tratados, dudas/objeciones, decisiones o datos importantes) como lista corta para una lectura rápida antes de entrar al texto completo.
+
+TRANSCRIPCIÓN ORIGINAL:
+---
+${transcript}
+---
+
+Responde ÚNICAMENTE con un objeto JSON con EXACTAMENTE estas claves: ${CLEAN_SCHEMA_KEYS.join(", ")}. "resumenPuntos" es un array de strings cortos. "transcripcionLimpia" es el texto completo limpio y organizado (puede ser largo, sin límite artificial).`;
+}
+
+function validateCleaned(obj: unknown): CleanedTranscript | null {
+  if (!obj || typeof obj !== "object") return null;
+  const o = obj as Record<string, unknown>;
+  if (typeof o.transcripcionLimpia !== "string" || !o.transcripcionLimpia.trim()) return null;
+  return {
+    resumenPuntos: Array.isArray(o.resumenPuntos) ? (o.resumenPuntos as unknown[]).map((p) => String(p).trim()).filter(Boolean) : [],
+    transcripcionLimpia: o.transcripcionLimpia.trim(),
+  };
+}
+
 export function registerProposalRoutes(app: FastifyInstance): void {
   // POST /proposals/extract { transcript } → borrador de contenido para la propuesta SBA.
   app.post("/proposals/extract", async (req, reply) => {
@@ -119,6 +152,24 @@ export function registerProposalRoutes(app: FastifyInstance): void {
       const proposal = raw ? validate(raw) : null;
       if (!proposal) return reply.status(503).send({ ok: false, error: "La IA no pudo extraer un borrador válido. Reintenta." });
       return { ok: true, proposal };
+    } catch (e) {
+      return reply.status(503).send({ ok: false, error: "IA no disponible: " + (e as Error).message });
+    }
+  });
+
+  // POST /proposals/clean-transcript { transcript } → versión limpia/organizada + puntos clave,
+  // para la vista de lectura de Conectores (no toca el contenido, solo legibilidad).
+  app.post("/proposals/clean-transcript", async (req, reply) => {
+    const body = (req.body ?? {}) as { transcript?: unknown };
+    const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
+    if (!transcript) return reply.status(400).send({ ok: false, error: 'Falta "transcript".' });
+    const clipped = transcript.length > MAX_TRANSCRIPT_CHARS ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) : transcript;
+
+    try {
+      const raw = await runJson<Record<string, unknown>>(buildCleanPrompt(clipped), suggestModel);
+      const cleaned = raw ? validateCleaned(raw) : null;
+      if (!cleaned) return reply.status(503).send({ ok: false, error: "La IA no pudo limpiar la transcripción. Reintenta." });
+      return { ok: true, cleaned };
     } catch (e) {
       return reply.status(503).send({ ok: false, error: "IA no disponible: " + (e as Error).message });
     }

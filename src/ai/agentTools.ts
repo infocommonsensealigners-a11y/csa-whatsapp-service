@@ -15,6 +15,7 @@ import { logUsage } from "../brain/usage";
 import { suggestModel } from "./agent";
 import { getLeadContext360 } from "../brain/leadContext";
 import { getBusinessSnapshot } from "../brain/businessSnapshot";
+import { getSupabase, brainConfigured } from "../brain/supabase";
 
 const fichaLead = tool(
   "ficha_lead",
@@ -36,7 +37,37 @@ const fotoNegocio = tool(
   }
 );
 
-const fransuaMcpServer = createSdkMcpServer({ name: "fransua", version: "1.0.0", tools: [fichaLead, fotoNegocio] });
+const buscarLeads = tool(
+  "buscar_leads",
+  "Busca leads en la inteligencia de conversaciones por un TEXTO (tema, interés, producto, campaña…). Devuelve, por cada coincidencia, su NOMBRE, su sourceRow (nº de fila en el CRM) y su teléfono. Úsalo para armar un conjunto de leads — p.ej. para luego abrir una vista filtrada en el CRM: necesitas sus sourceRow.",
+  { texto: z.string().describe("qué buscar, p.ej. 'Black Friday', 'financiación', 'certificación'") },
+  async (args: { texto: string }) => {
+    if (!brainConfigured()) return { content: [{ type: "text" as const, text: "Inteligencia no disponible." }] };
+    const q = (args.texto ?? "").toLowerCase().trim();
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from("chat_intel")
+      .select("source_row,phone,display_name,resumen,etiquetas,producto,temperatura")
+      .order("last_ts", { ascending: false })
+      .limit(2000);
+    if (error) return { content: [{ type: "text" as const, text: "Error consultando la inteligencia." }] };
+    const rows = (data ?? []).filter((r: any) => {
+      const ets = Array.isArray(r.etiquetas) ? r.etiquetas.join(" ") : "";
+      return `${r.display_name ?? ""} ${r.resumen ?? ""} ${r.producto ?? ""} ${ets}`.toLowerCase().includes(q);
+    });
+    const lineas = rows.slice(0, 60).map((r: any) => {
+      const cliente = Array.isArray(r.etiquetas) && r.etiquetas.some((e: any) => String(e).toLowerCase() === "cliente") ? " · CLIENTE" : "";
+      const fila = r.source_row != null ? ` (fila ${r.source_row})` : " (sin fila CRM)";
+      return `- ${r.display_name ?? "?"}${fila} · ${r.temperatura ?? "?"}${r.producto ? ` · ${r.producto}` : ""}${cliente}`;
+    });
+    const txt = rows.length
+      ? `${rows.length} leads coinciden con "${args.texto}" (máx 60 listados; usa el nº de fila como sourceRow):\n${lineas.join("\n")}`
+      : `Ningún lead coincide con "${args.texto}".`;
+    return { content: [{ type: "text" as const, text: txt }] };
+  }
+);
+
+const fransuaMcpServer = createSdkMcpServer({ name: "fransua", version: "1.0.0", tools: [fichaLead, fotoNegocio, buscarLeads] });
 
 export interface AgentRun {
   text: string;
@@ -50,7 +81,7 @@ export async function runAgent(prompt: string, model?: string): Promise<AgentRun
     prompt,
     options: {
       mcpServers: { fransua: fransuaMcpServer },
-      allowedTools: ["mcp__fransua__ficha_lead", "mcp__fransua__foto_negocio"],
+      allowedTools: ["mcp__fransua__ficha_lead", "mcp__fransua__foto_negocio", "mcp__fransua__buscar_leads"],
       maxTurns: 6,
       settingSources: [],
       ...(model ? { model } : {}),

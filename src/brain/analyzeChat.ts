@@ -114,6 +114,13 @@ CATEGORÍA (importantísimo — separa captación de postventa):
   algo más (no de inscribirse).
 - "lead": todavía no es alumno (aunque esté a punto de comprar).
 
+POSTVENTA (SOLO si categoria = "cliente"): incluye ADEMÁS en "etiquetas" EXACTAMENTE UNA de estas
+cuatro, que resuma su estado postventa AHORA (clasifícalo tú según la conversación):
+- "consulta": tiene una duda o pregunta y espera respuesta (soporte, logística, fechas de su curso).
+- "incidencia": algo va mal o se queja (pago, acceso, problema, malestar) → atención prioritaria.
+- "renovación": toca o conviene renovar / ampliar / vender el siguiente nivel.
+- "al día": todo en orden, sin nada pendiente ahora mismo.
+
 Criterios de temperatura (intención de INSCRIBIRSE en la formación; en clientes, de RENOVAR/ampliar):
 - caliente: pidió plaza, pidió precio concreto del programa, preguntó fechas de inicio, o mostró intención clara de apuntarse.
 - templado: interesado pero con dudas o sin cerrar; conversación abierta.

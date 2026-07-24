@@ -452,6 +452,8 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       "- foto_negocio(): estado global de la cartera hoy (embudo, cola, base a reactivar, renovaciones, ventas, alumnos).",
       "- ficha_lead(telefono): ficha 360 de UN lead (estado CRM, producto, propuesta/venta, si es alumno).",
       "- buscar_leads(texto): leads que coinciden con un tema/campaña/interés, CON su nº de fila (sourceRow) y teléfono.",
+      "- conversacion_lead(lead): cuántos MENSAJES de WhatsApp has intercambiado con un lead (por nombre o teléfono): total, cuántos tú / cuántos él, primer/último contacto y días con conversación. Úsala para «¿cuántas conversaciones/mensajes con X?».",
+      "- dormidos_reactivables(anio?, dias_min?): leads DORMIDOS (≥30d sin hablar) reactivables según su conversación (temperatura caliente/templado, sin clientes). `anio` filtra por el año de la ÚLTIMA conversación (dormido desde ese año). Úsala para «¿qué dormidos de 2025 son reactivables?».",
       "Con quien YA es cliente/alumno: nunca lenguaje de venta; atención/renovación.",
       "",
       "RIGOR (IMPORTANTE): NO afirmes cruces de datos (que un lead está en tal lista, que dijo tal cosa, que",

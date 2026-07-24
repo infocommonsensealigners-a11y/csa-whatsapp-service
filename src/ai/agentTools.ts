@@ -24,6 +24,7 @@ import { getSupabase, brainConfigured } from "../brain/supabase";
 import { createAgendaEvent } from "../brain/agenda";
 import { logActionAudit } from "../brain/audit";
 import { storeLeccion } from "../brain/lecciones";
+import { getDb } from "../db/db";
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -126,6 +127,124 @@ const buscarLeads = tool(
       ? `${rows.length} leads coinciden con "${args.texto}" (máx 60 listados; usa el nº de fila como sourceRow):\n${lineas.join("\n")}`
       : `Ningún lead coincide con "${args.texto}".`;
     return txt(out);
+  }
+);
+
+/** Fecha corta dd/MM/yyyy en Madrid a partir de epoch SEGUNDOS. */
+function fmtDay(tsSec: number | null | undefined): string {
+  if (!tsSec) return "?";
+  try {
+    return new Date(tsSec * 1000).toLocaleDateString("es-ES", { timeZone: "Europe/Madrid", day: "2-digit", month: "2-digit", year: "numeric" });
+  } catch {
+    return "?";
+  }
+}
+
+/**
+ * conversacion_lead — cuenta los mensajes de WhatsApp intercambiados con UN
+ * lead (fuente autoritativa: la BD local de mensajes, 60k+). Resuelve el chat
+ * por teléfono (9 díg) o por nombre; si el nombre casa con varios, los lista
+ * para que Fransua repregunte en vez de adivinar.
+ */
+const conversacionLead = tool(
+  "conversacion_lead",
+  "Cuenta los mensajes de WhatsApp intercambiados con UN lead (por su NOMBRE o su TELÉFONO): total de mensajes, cuántos enviaste tú (Fran) y cuántos te escribió, primer y último contacto, y en cuántos días distintos hubo conversación. Úsala para preguntas como «¿cuántas conversaciones/mensajes he tenido con X?». Si el nombre coincide con varias personas, te devuelve la lista para que preguntes cuál.",
+  { lead: z.string().describe("nombre (aunque sea parcial) o teléfono del lead") },
+  async (args: { lead: string }) => {
+    const raw = String(args.lead ?? "").trim();
+    if (!raw) return txt("Dime el nombre o el teléfono del lead.");
+    let db: ReturnType<typeof getDb>;
+    try { db = getDb(); } catch { return txt("La base de datos de conversaciones no está disponible ahora mismo."); }
+    const phone = canonPhone(raw);
+    let chats: Array<{ jid: string; display_name: string | null; phone: string | null }> = [];
+    if (phone.length >= 9) {
+      chats = db.prepare("SELECT jid, display_name, phone FROM chats WHERE phone = ?").all(phone) as typeof chats;
+    }
+    if (chats.length === 0) {
+      // Búsqueda por nombre (case-insensitive, contiene).
+      chats = db
+        .prepare("SELECT jid, display_name, phone FROM chats WHERE display_name IS NOT NULL AND lower(display_name) LIKE ? ORDER BY last_message_at DESC LIMIT 12")
+        .all(`%${raw.toLowerCase()}%`) as typeof chats;
+    }
+    if (chats.length === 0) return txt(`No encuentro ninguna conversación de WhatsApp con «${raw}». Puede que no esté en el histórico o que el nombre/teléfono no coincida.`);
+    if (chats.length > 1) {
+      const lista = chats.map((c) => `- ${c.display_name ?? "(sin nombre)"}${c.phone ? ` · ${c.phone}` : ""}`).join("\n");
+      return txt(`«${raw}» coincide con ${chats.length} conversaciones. ¿Cuál de estas?\n${lista}\n(Dímelo por teléfono para que no haya duda.)`);
+    }
+    const c = chats[0];
+    const row = db
+      .prepare("SELECT COUNT(*) AS n, COALESCE(SUM(from_me),0) AS fm, MIN(ts) AS first, MAX(ts) AS last, COUNT(DISTINCT date(ts,'unixepoch')) AS dias FROM messages WHERE chat_jid = ?")
+      .get(c.jid) as { n: number; fm: number; first: number | null; last: number | null; dias: number };
+    const total = row.n;
+    if (total === 0) return txt(`Con ${c.display_name ?? raw} hay una ficha de chat pero 0 mensajes en el histórico.`);
+    const tuyos = row.fm;
+    const suyos = total - tuyos;
+    return txt(
+      `Conversación con ${c.display_name ?? raw}${c.phone ? ` (${c.phone})` : ""}:\n` +
+        `- ${total} mensajes en total: ${tuyos} los enviaste tú, ${suyos} te los escribió.\n` +
+        `- Repartidos en ${row.dias} día(s) distintos con actividad.\n` +
+        `- Primer mensaje: ${fmtDay(row.first)} · último: ${fmtDay(row.last)}.`
+    );
+  }
+);
+
+/** Temperaturas que indican que un dormido AÚN se puede reactivar. */
+const REACTIVABLES = new Set(["caliente", "templado"]);
+
+/**
+ * dormidos_reactivables — leads dormidos (≥N días sin hablar) cuya última
+ * conversación fue en el año pedido y que, según su conversación (temperatura +
+ * resumen), tienen capacidad de reactivarse. Excluye clientes/alumnos. Fuente:
+ * chat_intel (Supabase). "de 2025" = su última conversación cae en 2025 (=
+ * dormido desde 2025); se explicita para no inducir a error.
+ */
+const dormidosReactivables = tool(
+  "dormidos_reactivables",
+  "Lista los leads DORMIDOS (por defecto ≥30 días sin hablar) cuya ÚLTIMA conversación cae en el año indicado y que, SEGÚN SU CONVERSACIÓN (temperatura caliente/templado + resumen), tienen capacidad de reactivarse. Excluye clientes/alumnos. Úsala para «¿qué dormidos de {año} son reactivables?». OJO: filtra por el AÑO de la última conversación (dormido desde ese año), no por la fecha de alta.",
+  {
+    anio: z.number().optional().describe("año de la última conversación, p.ej. 2025 (por defecto: no filtra por año)"),
+    dias_min: z.number().optional().describe("días mínimos de silencio para considerarlo dormido (por defecto 30)"),
+  },
+  async (args: { anio?: number; dias_min?: number }) => {
+    if (!brainConfigured()) return txt("Inteligencia no disponible.");
+    const diasMin = Number.isFinite(args.dias_min) && Number(args.dias_min) > 0 ? Number(args.dias_min) : 30;
+    const nowSec = Date.now() / 1000;
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from("chat_intel")
+      .select("display_name,phone,source_row,temperatura,resumen,last_ts,etiquetas,producto")
+      .order("last_ts", { ascending: false })
+      .limit(3000);
+    if (error) return txt("Error consultando la inteligencia de conversaciones.");
+    const rows = (data ?? []).filter((r: any) => {
+      if (!REACTIVABLES.has(String(r.temperatura))) return false; // reactivable según conversación
+      const esCliente = Array.isArray(r.etiquetas) && r.etiquetas.some((e: any) => String(e).toLowerCase() === "cliente");
+      if (esCliente) return false; // clientes/alumnos fuera (postventa, no reactivación de venta)
+      if (!r.last_ts) return false;
+      const silencio = (nowSec - Number(r.last_ts)) / 86400;
+      if (silencio < diasMin) return false; // dormido
+      if (args.anio) {
+        const y = new Date(Number(r.last_ts) * 1000).getFullYear();
+        if (y !== Number(args.anio)) return false;
+      }
+      return true;
+    });
+    if (rows.length === 0) {
+      return txt(`No hay leads dormidos${args.anio ? ` con última conversación en ${args.anio}` : ""} con capacidad clara de reactivarse (temperatura caliente/templado) por ahora.`);
+    }
+    const rank = (t: string) => (t === "caliente" ? 2 : t === "templado" ? 1 : 0);
+    rows.sort((a: any, b: any) => rank(b.temperatura) - rank(a.temperatura) || Number(b.last_ts) - Number(a.last_ts));
+    const lineas = rows.slice(0, 40).map((r: any) => {
+      const silencio = Math.round((nowSec - Number(r.last_ts)) / 86400);
+      const fila = r.source_row != null ? ` (fila ${r.source_row})` : "";
+      const resumen = r.resumen ? ` — ${String(r.resumen).slice(0, 90)}` : "";
+      return `- ${r.display_name ?? r.phone ?? "?"}${fila} · ${r.temperatura} · ${silencio}d en silencio (últ. ${fmtDay(r.last_ts)})${r.producto ? ` · ${r.producto}` : ""}${resumen}`;
+    });
+    return txt(
+      `${rows.length} leads dormidos${args.anio ? ` (última conversación en ${args.anio})` : ""} reactivables según su conversación ` +
+        `(≥${diasMin}d en silencio, temperatura caliente/templado, sin clientes). ${rows.length > 40 ? "Muestro los 40 más calientes:" : ""}\n` +
+        lineas.join("\n")
+    );
   }
 );
 
@@ -295,7 +414,13 @@ function buildWriteTools(actor: string) {
   return [crearEvento, crearRecordatorio, crearAviso, aprender];
 }
 
-const READ_TOOL_NAMES = ["mcp__fransua__ficha_lead", "mcp__fransua__foto_negocio", "mcp__fransua__buscar_leads"];
+const READ_TOOL_NAMES = [
+  "mcp__fransua__ficha_lead",
+  "mcp__fransua__foto_negocio",
+  "mcp__fransua__buscar_leads",
+  "mcp__fransua__conversacion_lead",
+  "mcp__fransua__dormidos_reactivables",
+];
 const WRITE_TOOL_NAMES = [
   "mcp__fransua__crear_evento_agenda",
   "mcp__fransua__crear_recordatorio",
@@ -319,7 +444,7 @@ export async function runAgent(prompt: string, model?: string, actor?: string): 
   const fransuaMcpServer = createSdkMcpServer({
     name: "fransua",
     version: "1.0.0",
-    tools: [fichaLead, fotoNegocio, buscarLeads, ...writeTools],
+    tools: [fichaLead, fotoNegocio, buscarLeads, conversacionLead, dormidosReactivables, ...writeTools],
   });
 
   const q = query({

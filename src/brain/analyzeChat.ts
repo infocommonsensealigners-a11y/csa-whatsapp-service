@@ -26,9 +26,11 @@ type Ai = {
   producto_mencionado?: string;
   /** "cliente" cuando la conversación evidencia que YA es alumno/cliente de CSA. */
   categoria?: string;
-  /** false SOLO si el lead cerró la conversación (despedida/agradecimiento) y no
-   *  espera respuesta — evita marcar "esperando respuesta" a quien ya se despidió. */
-  requiere_respuesta?: boolean;
+  /** true si el ÚLTIMO tramo llegó a un cierre natural (despedida/agradecimiento/
+   *  confirmación) SIN nada pendiente de ninguna parte — venga de quien venga el
+   *  último mensaje. Evita tanto falsos "esperando respuesta" (el lead se despidió)
+   *  como falso "ghosting" (nos despedimos NOSOTROS y el lead no contestó más). */
+  conversacion_cerrada?: boolean;
 };
 
 const MEDIA_LABEL: Record<string, string> = {
@@ -107,16 +109,34 @@ Devuelve SOLO un objeto JSON con EXACTAMENTE estas claves:
   "etiquetas": ["etiqueta corta para el comercial"],
   "producto_mencionado": "programa | mentoría | certificación | masterclass | financiación | ninguno | otro",
   "categoria": "lead | cliente",
-  "requiere_respuesta": true
+  "conversacion_cerrada": false
 }
 
-REQUIERE_RESPUESTA (importante — evita falsos "esperando respuesta"): pon **false**
-SOLO si el ÚLTIMO mensaje de la conversación es del LEAD y es un CIERRE conversacional
-que no espera respuesta activa (se despide, da las gracias, dice "vale"/"perfecto"/
-"genial gracias", confirma algo sin dejar pregunta abierta, emoji de aprobación). Eso
-NO es ghosting nuestro ni una pregunta sin contestar — es una conversación que se cerró
-bien. En cualquier otro caso (el lead preguntó o pidió algo, dejó un tema abierto, o el
-último mensaje es del agente) pon **true**. Ante la duda, true.
+CONVERSACION_CERRADA (importante — funciona en los DOS SENTIDOS, evita tanto falsos
+"esperando respuesta" como falso "ghosting nuestro"): pon **true** cuando el ÚLTIMO
+tramo de la charla llegó a un cierre natural y NO queda NADA pendiente de NINGUNA de
+las dos partes — da igual quién mandó el último mensaje.
+
+Son cierre (true), lo diga el LEAD o el AGENTE:
+- Despedidas: "hasta luego", "nos vemos", "que vaya bien", "buen día/finde".
+- Agradecimientos SIN pregunta detrás: "gracias", "genial gracias", "mil gracias", "muchas gracias por todo".
+- Confirmaciones sin nada más abierto: "vale", "perfecto", "de acuerdo", "recibido", "entendido", "ok".
+- Un emoji suelto de aprobación: 👍 🙏 😊 ❤️.
+- Casos concretos: el lead escribe "Ok gracias" tras recibir la info que pidió → true. El
+  AGENTE se despide ("un placer, que disfrutes la estancia") y el lead no vuelve a
+  escribir → TAMBIÉN true (nos despedimos nosotros; que el lead no conteste a una
+  despedida NO es que nos esté ignorando).
+
+Pon **false** (queda algo pendiente) si:
+- el mensaje MEZCLA un cierre con una pregunta o petición nueva ("vale gracias, ¿pero
+  me confirmas la fecha?" NO es cierre — hay una pregunta detrás),
+- el agente prometió algo (enviar info, confirmar plaza, llamar, mandar precio) y no
+  consta que lo haya hecho todavía,
+- el lead dijo que se lo pensaría/consultaría y no ha vuelto a escribir (silencio SIN
+  despedida expresa — el hilo se corta, no se cierra),
+  - el último mensaje deja una duda, precio, fecha o plaza en el aire.
+
+Ante la duda, **false** (mejor un aviso de más que perder uno real).
 
 CATEGORÍA (importantísimo — separa captación de postventa):
 - "cliente": la conversación evidencia que YA es alumno/cliente de CSA — habla de "mi curso",
@@ -220,13 +240,14 @@ export async function analyzeChat(jid: string): Promise<AnalyzeResult> {
     etiquetas: etiquetas.length ? etiquetas : null,
   });
 
-  // requiere_respuesta vive DENTRO de intervalos (no es columna propia de
+  // conversacion_cerrada vive DENTRO de intervalos (no es columna propia de
   // chat_intel) y se sobreescribe siempre con el juicio más reciente de la IA
-  // sobre el ÚLTIMO mensaje — igual que el resto de intervalos, sin pasar por
-  // la fusión aditiva (sería el juicio equivocado si se "pegara" al anterior).
+  // sobre el ÚLTIMO tramo — igual que el resto de intervalos, sin pasar por la
+  // fusión aditiva (sería el juicio equivocado si se "pegara" al anterior).
+  // Ante ausencia del campo, false (conservador: mejor un aviso de más).
   const intervalosConJuicio = {
     ...iv,
-    requiere_respuesta: typeof ai.requiere_respuesta === "boolean" ? ai.requiere_respuesta : true,
+    conversacion_cerrada: typeof ai.conversacion_cerrada === "boolean" ? ai.conversacion_cerrada : false,
   };
 
   const record = {

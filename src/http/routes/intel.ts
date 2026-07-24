@@ -54,20 +54,23 @@ function esCliente(r: IntelRow): boolean {
 function enrich(r: IntelRow) {
   const silencioDias = Math.round(daysSince(r.last_ts));
   const ultimoEmisor = r.intervalos?.ultimo_emisor ?? null;
-  // requiere_respuesta: false SOLO si la IA vio que el lead cerró la conversación
-  // (despedida/agradecimiento) — filas antiguas sin este campo se tratan como true
-  // (comportamiento previo, conservador: mejor un falso positivo que perder un aviso real).
-  const requiereRespuesta = r.intervalos?.requiere_respuesta;
-  const requiereRespuestaFinal = typeof requiereRespuesta === "boolean" ? requiereRespuesta : true;
+  // conversacion_cerrada: true cuando la IA vio un cierre natural (despedida/
+  // agradecimiento/confirmación) SIN nada pendiente — venga de quien venga el
+  // último mensaje. Filas antiguas sin este campo → false (comportamiento previo
+  // para esperando_respuesta; ghosting es un stat nuevo, no había regresión posible).
+  const cierre = r.intervalos?.conversacion_cerrada;
+  const cierreFinal = typeof cierre === "boolean" ? cierre : false;
   return {
     ...r,
     silencio_dias: silencioDias,
     ultimo_emisor: ultimoEmisor,
-    esperando_respuesta: ultimoEmisor === "lead" && requiereRespuestaFinal,
-    // GHOSTING: escribimos nosotros últimos y el lead lleva un tramo sin
-    // contestar (ni "gracias" ni nada) — distinto de "en silencio" (>30d, ver
-    // whatsappIntel.ts), que no mira quién escribió último.
-    ghosting: ultimoEmisor === "agente" && silencioDias >= GHOSTING_MIN_DIAS && silencioDias < GHOSTING_MAX_DIAS,
+    // El lead escribió último Y no fue un cierre suyo (si se despidió, no espera respuesta).
+    esperando_respuesta: ultimoEmisor === "lead" && !cierreFinal,
+    // GHOSTING: escribimos nosotros últimos, NO fue una despedida nuestra (si nos
+    // despedimos, que el lead no conteste más no es que nos ignore), y lleva un
+    // tramo sin contestar — distinto de "en silencio" (>30d, ver whatsappIntel.ts),
+    // que no mira quién escribió último.
+    ghosting: ultimoEmisor === "agente" && !cierreFinal && silencioDias >= GHOSTING_MIN_DIAS && silencioDias < GHOSTING_MAX_DIAS,
     es_cliente: esCliente(r),
   };
 }

@@ -29,7 +29,8 @@ import { logActionAudit } from "../../brain/audit";
 import { getEstrategiaCSA } from "../../brain/estrategia";
 import { runAgent, agentModel } from "../../ai/agentTools";
 import { runLearning } from "../../brain/learning";
-import { getLeccionesTexto, extractAndStoreLessons, listLecciones } from "../../brain/lecciones";
+import { getLeccionesTexto, extractAndStoreLessons, listLecciones, storeLeccion } from "../../brain/lecciones";
+import { logPregunta, listPreguntas } from "../../brain/preguntas";
 import type { FastifyRequest } from "fastify";
 
 
@@ -499,6 +500,10 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       // APRENDIZAJE por interacción (async, best-effort): si en este intercambio
       // Fran corrigió/enseñó algo, se extrae y guarda la lección para el futuro.
       void extractAndStoreLessons(question, r.text, actorFrom(req));
+      // BANCO DE PREGUNTAS (async, best-effort): registra la pregunta y marca si
+      // quedó SIN RESOLVER, para revisarla y enseñarle la respuesta (ver
+      // brain/preguntas.ts + GET/POST /intel/preguntas).
+      void logPregunta({ pregunta: question, respuesta: r.text, toolsUsed: r.toolsUsed?.length ?? 0, actor: actorFrom(req) });
       return { ok: true, answer: r.text, toolsUsed: r.toolsUsed };
     } catch (e) {
       return reply.status(502).send({ ok: false, error: "IA no disponible", message: (e as Error).message });
@@ -511,6 +516,34 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const limit = Math.min(Number((req.query as any)?.limit) || 30, 100);
     const items = await listLecciones(limit);
     return { ok: true, items };
+  });
+
+  // BANCO DE PREGUNTAS (kind='pregunta') — lo que Fran le pregunta al chat, con
+  // marca de si quedó SIN RESOLVER. `?sinResolver=1` filtra a las que fallaron.
+  app.get("/intel/preguntas", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const q = (req.query ?? {}) as { limit?: string; sinResolver?: string };
+    const limit = Math.min(Number(q.limit) || 50, 200);
+    const soloSinResolver = q.sinResolver === "1" || q.sinResolver === "true";
+    const items = await listPreguntas({ limit, soloSinResolver });
+    const sinResolver = items.filter((i) => !i.resuelta).length;
+    return { ok: true, items, total: items.length, sinResolver };
+  });
+
+  // ENSEÑAR la respuesta a una pregunta que Fransua no supo resolver: se guarda
+  // como LECCIÓN (se inyecta en su prompt) → la próxima vez SÍ sabrá responder
+  // ese tipo de pregunta. Cierra el bucle del banco de preguntas.
+  app.post("/intel/preguntas/ensenar", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const b = (req.body ?? {}) as { pregunta?: string; respuesta?: string };
+    const pregunta = String(b.pregunta ?? "").trim();
+    const respuesta = String(b.respuesta ?? "").trim();
+    if (!pregunta || !respuesta) return reply.status(400).send({ ok: false, error: "pregunta y respuesta son obligatorias" });
+    // La lección es una REGLA: "cuando te pregunten X, responde/haz Y".
+    const leccion = `Cuando Fran pregunte algo como «${pregunta.slice(0, 180)}», responde así: ${respuesta.slice(0, 400)}`;
+    const r = await storeLeccion({ leccion, contexto: pregunta.slice(0, 200), actor: actorFrom(req), origen: "tool" });
+    if (!r.ok) return reply.status(502).send(r);
+    return { ok: true };
   });
 
   // BUCLE DE APRENDIZAJE (idea 5): Fransua mira las MÉTRICAS DE RESULTADO reales

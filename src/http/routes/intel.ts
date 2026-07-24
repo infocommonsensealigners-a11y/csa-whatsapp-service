@@ -20,6 +20,11 @@ import { getEstrategiaCSA } from "../../brain/estrategia";
 import { getLeadContext360 } from "../../brain/leadContext";
 
 const STRATEGY_SINCE = "2025-04-01";
+// "Ghosting" (petición del usuario, 2026-07-24): nosotros escribimos últimos y el
+// lead no ha contestado. Ventana acotada para no solaparse con "en silencio"
+// (>30d, ver whatsappIntel.ts) — un aviso reciente y accionable, no "dormido".
+const GHOSTING_MIN_DIAS = 3;
+const GHOSTING_MAX_DIAS = 30;
 const COLS =
   "jid,phone,display_name,source_row,producto,first_ts,last_ts,msg_count,from_me_count,temperatura,temperatura_motivo,resumen,intereses,intervalos,etiquetas,model,updated_at";
 
@@ -49,11 +54,20 @@ function esCliente(r: IntelRow): boolean {
 function enrich(r: IntelRow) {
   const silencioDias = Math.round(daysSince(r.last_ts));
   const ultimoEmisor = r.intervalos?.ultimo_emisor ?? null;
+  // requiere_respuesta: false SOLO si la IA vio que el lead cerró la conversación
+  // (despedida/agradecimiento) — filas antiguas sin este campo se tratan como true
+  // (comportamiento previo, conservador: mejor un falso positivo que perder un aviso real).
+  const requiereRespuesta = r.intervalos?.requiere_respuesta;
+  const requiereRespuestaFinal = typeof requiereRespuesta === "boolean" ? requiereRespuesta : true;
   return {
     ...r,
     silencio_dias: silencioDias,
     ultimo_emisor: ultimoEmisor,
-    esperando_respuesta: ultimoEmisor === "lead",
+    esperando_respuesta: ultimoEmisor === "lead" && requiereRespuestaFinal,
+    // GHOSTING: escribimos nosotros últimos y el lead lleva un tramo sin
+    // contestar (ni "gracias" ni nada) — distinto de "en silencio" (>30d, ver
+    // whatsappIntel.ts), que no mira quién escribió último.
+    ghosting: ultimoEmisor === "agente" && silencioDias >= GHOSTING_MIN_DIAS && silencioDias < GHOSTING_MAX_DIAS,
     es_cliente: esCliente(r),
   };
 }
@@ -105,6 +119,11 @@ export function registerIntelRoutes(app: FastifyInstance): void {
       .filter((r) => r.temperatura === "templado" && r.silencio_dias >= 7 && r.silencio_dias <= 45)
       .sort((a, b) => a.silencio_dias - b.silencio_dias)
       .slice(0, 25);
+    // 3b) ghosting: escribimos nosotros y el lead no ha contestado (ver GHOSTING_MIN/MAX_DIAS).
+    const ghosting = venta
+      .filter((r) => r.ghosting)
+      .sort((a, b) => b.silencio_dias - a.silencio_dias)
+      .slice(0, 25);
     // 4) alumnos/clientes que escribieron y esperan respuesta (postventa).
     const alumnosEscriben = clientes
       .filter((r) => r.esperando_respuesta && r.silencio_dias >= 0)
@@ -119,6 +138,7 @@ export function registerIntelRoutes(app: FastifyInstance): void {
       esperandoRespuesta: esperando,
       calientesEnfriando,
       templadosReactivar,
+      ghosting,
       alumnosEscriben,
       clientesDetectados: clientes.length,
     };

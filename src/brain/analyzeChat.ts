@@ -26,6 +26,9 @@ type Ai = {
   producto_mencionado?: string;
   /** "cliente" cuando la conversación evidencia que YA es alumno/cliente de CSA. */
   categoria?: string;
+  /** false SOLO si el lead cerró la conversación (despedida/agradecimiento) y no
+   *  espera respuesta — evita marcar "esperando respuesta" a quien ya se despidió. */
+  requiere_respuesta?: boolean;
 };
 
 const MEDIA_LABEL: Record<string, string> = {
@@ -103,8 +106,17 @@ Devuelve SOLO un objeto JSON con EXACTAMENTE estas claves:
   "intereses": [{"label": "interés concreto (p.ej. financiación, fechas, contenido clínico, modalidad)", "evidence": "cita muy breve del chat"}],
   "etiquetas": ["etiqueta corta para el comercial"],
   "producto_mencionado": "programa | mentoría | certificación | masterclass | financiación | ninguno | otro",
-  "categoria": "lead | cliente"
+  "categoria": "lead | cliente",
+  "requiere_respuesta": true
 }
+
+REQUIERE_RESPUESTA (importante — evita falsos "esperando respuesta"): pon **false**
+SOLO si el ÚLTIMO mensaje de la conversación es del LEAD y es un CIERRE conversacional
+que no espera respuesta activa (se despide, da las gracias, dice "vale"/"perfecto"/
+"genial gracias", confirma algo sin dejar pregunta abierta, emoji de aprobación). Eso
+NO es ghosting nuestro ni una pregunta sin contestar — es una conversación que se cerró
+bien. En cualquier otro caso (el lead preguntó o pidió algo, dejó un tema abierto, o el
+último mensaje es del agente) pon **true**. Ante la duda, true.
 
 CATEGORÍA (importantísimo — separa captación de postventa):
 - "cliente": la conversación evidencia que YA es alumno/cliente de CSA — habla de "mi curso",
@@ -208,6 +220,15 @@ export async function analyzeChat(jid: string): Promise<AnalyzeResult> {
     etiquetas: etiquetas.length ? etiquetas : null,
   });
 
+  // requiere_respuesta vive DENTRO de intervalos (no es columna propia de
+  // chat_intel) y se sobreescribe siempre con el juicio más reciente de la IA
+  // sobre el ÚLTIMO mensaje — igual que el resto de intervalos, sin pasar por
+  // la fusión aditiva (sería el juicio equivocado si se "pegara" al anterior).
+  const intervalosConJuicio = {
+    ...iv,
+    requiere_respuesta: typeof ai.requiere_respuesta === "boolean" ? ai.requiere_respuesta : true,
+  };
+
   const record = {
     jid,
     phone: meta.phone ?? null,
@@ -217,7 +238,7 @@ export async function analyzeChat(jid: string): Promise<AnalyzeResult> {
     last_ts,
     msg_count: msgs.length,
     from_me_count,
-    intervalos: iv,
+    intervalos: intervalosConJuicio,
     model: bulkModel,
     generation: 1,
     updated_at: new Date().toISOString(),

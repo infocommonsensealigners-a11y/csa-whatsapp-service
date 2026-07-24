@@ -31,6 +31,12 @@ export interface AmbiguousMatch {
   candidatos: string[];
 }
 
+export interface NoMatchChat {
+  jid: string;
+  display_name: string | null;
+  phone: string | null;
+}
+
 export interface LinkLeadsResult {
   dirCount: number;
   linkCount: number;
@@ -43,6 +49,9 @@ export interface LinkLeadsResult {
   chatsNoLeadByName: number;
   chatsAmbiguousByName: number;
   ambiguous: AmbiguousMatch[];
+  /** Chats sin NINGÚN lead candidato (ni por teléfono ni por nombre) — genuinamente
+   *  nuevos. Fuente para la Fase 2 (auto-crear ficha mínima), ver linkLeadsScheduler.ts. */
+  noMatch: NoMatchChat[];
 }
 
 /** Móvil ES canónico (9 díg.) o null. Tolera +34 / 0034 / espacios. */
@@ -157,6 +166,7 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
     chatsNoLeadByName = 0,
     chatsAmbiguousByName = 0;
   const ambiguous: AmbiguousMatch[] = [];
+  const noMatch: NoMatchChat[] = [];
   const wanted = new Set<string>();
 
   const tx = db.transaction(() => {
@@ -169,6 +179,7 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
         const matches = byPhone.get(c.phone) ?? [];
         if (matches.length === 0) {
           chatsNoLead++;
+          noMatch.push({ jid: c.jid, display_name: c.display_name, phone: c.phone });
           continue;
         }
         if (matches.length > 1) chatsMulti++;
@@ -183,6 +194,7 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
       const matches = matchByName(c.display_name);
       if (matches.length === 0) {
         chatsNoLeadByName++;
+        noMatch.push({ jid: c.jid, display_name: c.display_name, phone: null });
         continue;
       }
       if (matches.length > 1) {
@@ -223,5 +235,6 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
     chatsNoLeadByName,
     chatsAmbiguousByName,
     ambiguous,
+    noMatch,
   };
 }

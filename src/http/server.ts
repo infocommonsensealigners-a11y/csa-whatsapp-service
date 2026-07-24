@@ -18,6 +18,7 @@ import { registerAdminRoutes } from "./routes/admin";
 import { registerPlanRoutes } from "./routes/plan";
 import { registerUsageRoutes } from "./routes/usage";
 import { registerProposalRoutes } from "./routes/proposals";
+import { registerLinkLeadsRoutes } from "./routes/linkLeads";
 
 export async function startHttpServer(): Promise<FastifyInstance> {
   // bodyLimit alto: una exportación de chat larga puede pesar varios MB.
@@ -36,6 +37,7 @@ export async function startHttpServer(): Promise<FastifyInstance> {
   registerPlanRoutes(app);
   registerUsageRoutes(app);
   registerProposalRoutes(app);
+  registerLinkLeadsRoutes(app);
   // Pendiente F1: media de mensajes + links/matcher. F2: tags/artifacts/jobs.
 
   await app.listen({ host: config.host, port: config.port });

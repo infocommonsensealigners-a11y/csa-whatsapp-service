@@ -37,7 +37,14 @@ async function syncToGoogle(event: any): Promise<string | null> {
 
 const COLS =
   "id,source_row,jid,titulo,descripcion,start_at,end_at,all_day,tipo,origen,color,google_event_id,status,created_at,updated_at";
-const TIPOS = new Set(["cita", "formacion", "llamada", "seguimiento", "otro"]);
+
+/** Tipo de evento: string libre (la key del catálogo DINÁMICO del dashboard).
+ *  Ya no hay lista cerrada — el usuario crea sus propios tipos. Se sanea a un
+ *  string corto; si viene vacío, cae a "cita". */
+function normTipo(v: unknown, fallback = "cita"): string {
+  const s = typeof v === "string" ? v.trim().slice(0, 60) : "";
+  return s || fallback;
+}
 
 function down(reply: any) {
   return reply.status(503).send({ ok: false, error: "brain-not-configured" });
@@ -92,7 +99,7 @@ export function registerCalendarRoutes(app: FastifyInstance): void {
       start_at: new Date(b.start_at).toISOString(),
       end_at: b.end_at ? new Date(b.end_at).toISOString() : null,
       all_day: !!b.all_day,
-      tipo: TIPOS.has(b.tipo) ? b.tipo : "cita",
+      tipo: normTipo(b.tipo),
       origen: b.origen === "fransua" ? "fransua" : "humano",
       source_row: Number.isFinite(Number(b.source_row)) ? Number(b.source_row) : null,
       jid: b.jid ? String(b.jid) : null,
@@ -122,7 +129,7 @@ export function registerCalendarRoutes(app: FastifyInstance): void {
     if (b.start_at != null) patch.start_at = new Date(b.start_at).toISOString();
     if (b.end_at !== undefined) patch.end_at = b.end_at ? new Date(b.end_at).toISOString() : null;
     if (b.all_day != null) patch.all_day = !!b.all_day;
-    if (b.tipo != null && TIPOS.has(b.tipo)) patch.tipo = b.tipo;
+    if (b.tipo != null && String(b.tipo).trim()) patch.tipo = normTipo(b.tipo);
     if (b.source_row !== undefined) patch.source_row = Number.isFinite(Number(b.source_row)) ? Number(b.source_row) : null;
     if (b.jid !== undefined) patch.jid = b.jid ? String(b.jid) : null;
     if (b.color !== undefined) patch.color = b.color ? String(b.color) : null;

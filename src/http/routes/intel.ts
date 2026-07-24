@@ -23,7 +23,7 @@ const STRATEGY_SINCE = "2025-04-01";
 // "Ghosting" (petición del usuario, 2026-07-24): nosotros escribimos últimos y el
 // lead no ha contestado. Ventana acotada para no solaparse con "en silencio"
 // (>30d, ver whatsappIntel.ts) — un aviso reciente y accionable, no "dormido".
-const GHOSTING_MIN_DIAS = 3;
+const GHOSTING_MIN_DIAS = 7;
 const GHOSTING_MAX_DIAS = 30;
 const COLS =
   "jid,phone,display_name,source_row,producto,first_ts,last_ts,msg_count,from_me_count,temperatura,temperatura_motivo,resumen,intereses,intervalos,etiquetas,model,updated_at";

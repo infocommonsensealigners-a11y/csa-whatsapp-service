@@ -118,6 +118,76 @@ export function registerCalendarRoutes(app: FastifyInstance): void {
     return { ok: true, event: data };
   });
 
+  // IMPORTACIÓN MASIVA (p.ej. .ics del iPhone de Fran). Inserta por LOTES y NO
+  // sincroniza a Google (serían cientos de llamadas). Dedupe opcional por
+  // (titulo,start_at) contra lo ya existente para que reimportar no duplique.
+  app.post("/calendar/import", async (req, reply) => {
+    if (!brainConfigured()) return down(reply);
+    const b = (req.body ?? {}) as { events?: any[]; skipExisting?: boolean };
+    const items = Array.isArray(b.events) ? b.events : [];
+    if (!items.length) return reply.status(400).send({ ok: false, error: "events vacío" });
+    if (items.length > 5000) return reply.status(400).send({ ok: false, error: "demasiados eventos (máx 5000)" });
+    const sb = getSupabase();
+
+    // Normaliza y descarta inválidos.
+    const records = items
+      .map((b: any) => {
+        if (!b?.titulo || !b?.start_at) return null;
+        const start = new Date(b.start_at);
+        if (Number.isNaN(start.getTime())) return null;
+        return {
+          titulo: String(b.titulo).slice(0, 300),
+          descripcion: b.descripcion ? String(b.descripcion).slice(0, 2000) : null,
+          start_at: start.toISOString(),
+          end_at: b.end_at ? new Date(b.end_at).toISOString() : null,
+          all_day: !!b.all_day,
+          tipo: normTipo(b.tipo),
+          origen: "humano" as const,
+          source_row: Number.isFinite(Number(b.source_row)) ? Number(b.source_row) : null,
+          jid: b.jid ? String(b.jid) : null,
+          color: b.color ? String(b.color) : null,
+          status: "active" as const,
+        };
+      })
+      .filter(Boolean) as any[];
+
+    let toInsert = records;
+    let skipped = 0;
+    if (b.skipExisting !== false) {
+      // Clave (titulo|start_at) de lo ya existente en el rango importado.
+      const starts = records.map((r) => r.start_at).sort();
+      const from = starts[0];
+      const to = starts[starts.length - 1];
+      const { data: existing } = await sb
+        .from("calendar_events")
+        .select("titulo,start_at")
+        .neq("status", "cancelled")
+        .gte("start_at", from)
+        .lte("start_at", to)
+        .limit(10000);
+      const seen = new Set((existing ?? []).map((e: any) => `${e.titulo}|${new Date(e.start_at).toISOString()}`));
+      const before = toInsert.length;
+      const uniq: any[] = [];
+      for (const r of toInsert) {
+        const k = `${r.titulo}|${r.start_at}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        uniq.push(r);
+      }
+      toInsert = uniq;
+      skipped = before - toInsert.length;
+    }
+
+    let inserted = 0;
+    for (let i = 0; i < toInsert.length; i += 500) {
+      const chunk = toInsert.slice(i, i + 500);
+      const { error, count } = await sb.from("calendar_events").insert(chunk, { count: "exact" });
+      if (error) return reply.status(502).send({ ok: false, error: error.message, inserted, skipped });
+      inserted += count ?? chunk.length;
+    }
+    return { ok: true, inserted, skipped, received: items.length };
+  });
+
   app.patch("/calendar/events/:id", async (req, reply) => {
     if (!brainConfigured()) return down(reply);
     const id = Number((req.params as any).id);

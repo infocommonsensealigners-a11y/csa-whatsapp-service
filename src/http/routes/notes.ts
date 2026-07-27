@@ -31,7 +31,7 @@ import { runAgent, agentModel } from "../../ai/agentTools";
 import { runLearning } from "../../brain/learning";
 import { getLeccionesTexto, extractAndStoreLessons, listLecciones, storeLeccion } from "../../brain/lecciones";
 import { logPregunta, listPreguntas } from "../../brain/preguntas";
-import { learnAgendaPlaybook, proposeAgendaEvents, getAgendaPlaybook } from "../../brain/agendaPlaybook";
+import { learnAgendaPlaybook, proposeAgendaEvents, getAgendaPlaybook, getStoredProposals } from "../../brain/agendaPlaybook";
 import type { FastifyRequest } from "fastify";
 
 
@@ -529,7 +529,7 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     try {
       const r = await learnAgendaPlaybook();
       if (!r.ok) return reply.status(r.error === "pocos-eventos" ? 400 : 502).send(r);
-      return { ok: true, total: r.total, tipos: r.tipos, playbook: r.playbook };
+      return { ok: true, total: r.total, tipos: r.tipos, proposals: r.proposals, playbook: r.playbook };
     } catch (e) {
       return reply.status(502).send({ ok: false, error: (e as Error).message });
     }
@@ -538,14 +538,27 @@ export function registerNoteRoutes(app: FastifyInstance): void {
   // AGENDA · PROPUESTAS EN EL ESTILO DE FRAN: combina el playbook aprendido con
   // la cartera viva (leads que piden acción) y lo ya agendado → eventos que Fran
   // pondría. Sustituyen la fila "Fransua sugiere" del panel derecho de la agenda.
+  // Por defecto devuelve las ÚLTIMAS propuestas guardadas (lectura instantánea, sin
+  // IA); `?refresh=1` las REGENERA con el LLM. Si no hay guardadas y ya hay playbook,
+  // genera una vez. Así abrir el panel no dispara una llamada IA lenta cada vez.
   app.get("/intel/agenda-proposals", async (req, reply) => {
     if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
     const limit = Math.min(Number((req.query as any)?.limit) || 10, 15);
+    const refresh = (req.query as any)?.refresh === "1" || (req.query as any)?.refresh === "true";
     try {
-      const r = await proposeAgendaEvents(limit);
-      return { ok: true, ...r };
+      if (!refresh) {
+        const stored = await getStoredProposals();
+        if (stored.proposals.length) {
+          const pb = await getAgendaPlaybook();
+          return { ok: true, proposals: stored.proposals, playbookAt: pb.at, learned: !!pb.texto, candidatos: stored.proposals.length, cached: true, at: stored.at };
+        }
+      }
+      const r = await proposeAgendaEvents(limit, { persist: true });
+      return { ok: true, ...r, cached: false };
     } catch (e) {
-      return reply.status(502).send({ ok: false, error: (e as Error).message, proposals: [] });
+      // Nunca rompas el panel: devuelve lo último guardado si algo falla.
+      const stored = await getStoredProposals().catch(() => ({ proposals: [], at: null }));
+      return reply.status(200).send({ ok: true, proposals: stored.proposals, learned: false, candidatos: 0, error: (e as Error).message, cached: true });
     }
   });
 

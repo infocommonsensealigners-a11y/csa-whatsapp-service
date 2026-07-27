@@ -84,7 +84,7 @@ function buildDigest(rows: LearnRow[]) {
 let playbookCache: { texto: string; at: number; storedAt: string | null; total: number } | null = null;
 const PLAYBOOK_TTL_MS = 5 * 60_000;
 
-export interface LearnResult { ok: boolean; error?: string; playbook?: string; total?: number; tipos?: number; }
+export interface LearnResult { ok: boolean; error?: string; playbook?: string; total?: number; tipos?: number; proposals?: number; }
 
 /** Aprende (o re-aprende) el playbook de Fran a partir de su agenda importada. */
 export async function learnAgendaPlaybook(): Promise<LearnResult> {
@@ -152,7 +152,16 @@ export async function learnAgendaPlaybook(): Promise<LearnResult> {
     });
   } catch { /* best-effort: la caché ya sirve el playbook aunque no persista */ }
   playbookCache = { texto, at: Date.now(), storedAt, total: rows.length };
-  return { ok: true, playbook: texto, total: rows.length, tipos: digest.tipos.length };
+
+  // Con el playbook fresco, genera YA las propuestas y persístelas: así al volver
+  // el panel las lee al instante (sin otra llamada IA lenta). Best-effort.
+  let proposals = 0;
+  try {
+    const r = await proposeAgendaEvents(10, { persist: true });
+    proposals = r.proposals.length;
+  } catch { /* el playbook ya quedó guardado; las propuestas se pueden pedir con ⟳ */ }
+
+  return { ok: true, playbook: texto, total: rows.length, tipos: digest.tipos.length, proposals };
 }
 
 /** Playbook más reciente (cacheado ~5 min). "" si nunca se ha aprendido. */
@@ -239,14 +248,46 @@ async function candidateLeads(sb: ReturnType<typeof getSupabase>, max = 16): Pro
   return merged;
 }
 
-// ── PROPONER EVENTOS EN EL ESTILO DE FRAN ───────────────────────────────────────
-export interface ProposeResult { proposals: AgendaProposal[]; playbookAt: string | null; learned: boolean; candidatos: number; }
+// ── PERSISTENCIA DE PROPUESTAS ──────────────────────────────────────────────────
+// Se guardan las últimas propuestas generadas (fransua_log kind='agenda_proposals')
+// para que ABRIR el panel sea instantáneo (lectura, sin LLM) y REAPRENDER/⟳ las
+// refresque. Evita que cada apertura dispare una llamada IA lenta que el proxy
+// pudiera cortar (síntoma: panel cae al listado base y "reaprender" no cambia nada).
+export async function getStoredProposals(): Promise<{ proposals: AgendaProposal[]; at: string | null }> {
+  if (!brainConfigured()) return { proposals: [], at: null };
+  try {
+    const sb = getSupabase();
+    const { data } = await sb
+      .from("fransua_log")
+      .select("payload,created_at")
+      .eq("kind", "agenda_proposals")
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const p = (data?.[0]?.payload ?? null) as { proposals?: AgendaProposal[]; at?: string } | null;
+    return { proposals: Array.isArray(p?.proposals) ? p!.proposals! : [], at: p?.at ?? (data?.[0]?.created_at as string | undefined) ?? null };
+  } catch {
+    return { proposals: [], at: null };
+  }
+}
 
-export async function proposeAgendaEvents(limit = 10): Promise<ProposeResult> {
+async function storeProposals(list: AgendaProposal[]): Promise<void> {
+  try {
+    const sb = getSupabase();
+    await sb.from("fransua_log").insert({ kind: "agenda_proposals", payload: { at: new Date().toISOString(), proposals: list } });
+  } catch { /* best-effort */ }
+}
+
+// ── PROPONER EVENTOS EN EL ESTILO DE FRAN ───────────────────────────────────────
+export interface ProposeResult { proposals: AgendaProposal[]; playbookAt: string | null; learned: boolean; candidatos: number; error?: string; }
+
+export async function proposeAgendaEvents(limit = 10, opts: { persist?: boolean } = {}): Promise<ProposeResult> {
   if (!brainConfigured()) return { proposals: [], playbookAt: null, learned: false, candidatos: 0 };
   const sb = getSupabase();
   const [{ texto: playbook, at: playbookAt }, cands] = await Promise.all([getAgendaPlaybook(), candidateLeads(sb)]);
-  if (!cands.length) return { proposals: [], playbookAt, learned: !!playbook, candidatos: 0 };
+  if (!cands.length) {
+    if (opts.persist) await storeProposals([]);
+    return { proposals: [], playbookAt, learned: !!playbook, candidatos: 0 };
+  }
 
   // Eventos ya agendados (próximos 30 días) para NO duplicar propuestas.
   const now = new Date();
@@ -261,7 +302,10 @@ export async function proposeAgendaEvents(limit = 10): Promise<ProposeResult> {
   const yaAgendado = (yaData ?? []) as any[];
   const filasAgendadas = new Set(yaAgendado.filter((e) => e.source_row != null).map((e) => Number(e.source_row)));
   const candidatosLibres = cands.filter((c) => c.source_row == null || !filasAgendadas.has(Number(c.source_row)));
-  if (!candidatosLibres.length) return { proposals: [], playbookAt, learned: !!playbook, candidatos: cands.length };
+  if (!candidatosLibres.length) {
+    if (opts.persist) await storeProposals([]);
+    return { proposals: [], playbookAt, learned: !!playbook, candidatos: cands.length };
+  }
 
   const off = madridOffset(now);
   const hoyISO = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
@@ -307,6 +351,11 @@ export async function proposeAgendaEvents(limit = 10): Promise<ProposeResult> {
   ].filter(Boolean).join("\n");
 
   const out = await runJson<{ proposals?: any[] }>(prompt, learnModel);
+  if (!out) {
+    // La IA no respondió/parse falló: NO pisamos la caché con vacío.
+    console.warn(`[agenda-propose] IA sin respuesta (candidatos=${candidatosLibres.length}); mantengo propuestas previas`);
+    return { proposals: [], playbookAt, learned: !!playbook, candidatos: candidatosLibres.length, error: "IA no disponible" };
+  }
   const raw = Array.isArray(out?.proposals) ? out!.proposals! : [];
   const proposals: AgendaProposal[] = [];
   for (const p of raw) {
@@ -335,5 +384,7 @@ export async function proposeAgendaEvents(limit = 10): Promise<ProposeResult> {
     });
     if (proposals.length >= limit) break;
   }
+  console.log(`[agenda-propose] candidatos=${candidatosLibres.length} generadas=${proposals.length} playbook=${playbook ? "sí" : "no"}`);
+  if (opts.persist) await storeProposals(proposals);
   return { proposals, playbookAt, learned: !!playbook, candidatos: candidatosLibres.length };
 }

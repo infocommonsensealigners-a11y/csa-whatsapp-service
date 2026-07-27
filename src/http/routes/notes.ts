@@ -31,6 +31,7 @@ import { runAgent, agentModel } from "../../ai/agentTools";
 import { runLearning } from "../../brain/learning";
 import { getLeccionesTexto, extractAndStoreLessons, listLecciones, storeLeccion } from "../../brain/lecciones";
 import { logPregunta, listPreguntas } from "../../brain/preguntas";
+import { learnAgendaPlaybook, proposeAgendaEvents, getAgendaPlaybook } from "../../brain/agendaPlaybook";
 import type { FastifyRequest } from "fastify";
 
 
@@ -518,6 +519,41 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const limit = Math.min(Number((req.query as any)?.limit) || 30, 100);
     const items = await listLecciones(limit);
     return { ok: true, items };
+  });
+
+  // AGENDA · APRENDER LA ESTRUCTURA DE FRAN: analiza su agenda importada
+  // (calendar_events humanos) y sintetiza su PLAYBOOK (vocabulario, cadencias,
+  // ritmo) → fransua_log kind='agenda_playbook'. Se dispara tras importar el .ics.
+  app.post("/intel/agenda-learn", async (_req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    try {
+      const r = await learnAgendaPlaybook();
+      if (!r.ok) return reply.status(r.error === "pocos-eventos" ? 400 : 502).send(r);
+      return { ok: true, total: r.total, tipos: r.tipos, playbook: r.playbook };
+    } catch (e) {
+      return reply.status(502).send({ ok: false, error: (e as Error).message });
+    }
+  });
+
+  // AGENDA · PROPUESTAS EN EL ESTILO DE FRAN: combina el playbook aprendido con
+  // la cartera viva (leads que piden acción) y lo ya agendado → eventos que Fran
+  // pondría. Sustituyen la fila "Fransua sugiere" del panel derecho de la agenda.
+  app.get("/intel/agenda-proposals", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const limit = Math.min(Number((req.query as any)?.limit) || 10, 15);
+    try {
+      const r = await proposeAgendaEvents(limit);
+      return { ok: true, ...r };
+    } catch (e) {
+      return reply.status(502).send({ ok: false, error: (e as Error).message, proposals: [] });
+    }
+  });
+
+  // AGENDA · estado del playbook (para la UI: ¿ya aprendió?, ¿cuándo?).
+  app.get("/intel/agenda-playbook", async (_req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const p = await getAgendaPlaybook();
+    return { ok: true, aprendido: !!p.texto, at: p.at, total: p.total, playbook: p.texto };
   });
 
   // BANCO DE PREGUNTAS (kind='pregunta') — lo que Fran le pregunta al chat, con

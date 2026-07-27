@@ -123,9 +123,23 @@ Devuelve SOLO un objeto JSON con EXACTAMENTE estas claves:
   "producto_mencionado": "programa | mentoría | certificación | masterclass | financiación | ninguno | otro"
 }
 
+APERTURA AUTOMÁTICA DEL BOTÓN DE WHATSAPP DE LA WEB (importante — no sobre-calentar):
+Muchos leads NO escriben su primer mensaje: llegan de un botón de WhatsApp de la
+web/landing que PRE-RELLENA un texto tipo "Hola, vengo de la web y quiero saber más
+información sobre el programa [SBA / ESTANCIA / CERTIFICACIÓN / el que sea]..." —
+el lead lo manda tal cual con un solo toque, SIN haber escrito nada de su puño y
+letra todavía. Esa apertura, aunque su redacción suene a "quiero información", NO es
+por sí sola una señal fuerte de intención — la manda cualquiera que solo estaba
+curioseando. Si el ÚNICO mensaje del lead (o el más reciente sin respuesta suya
+posterior) es esa apertura plantilla, la temperatura NO puede ser "caliente" solo
+por eso — como mucho "templado" (dilo en el motivo: apertura automática, a la
+espera de su siguiente mensaje). Si el lead SÍ amplía esa apertura por su
+cuenta o responde con más información tras el agente, eso YA es señal propia y se
+valora con normalidad.
+
 Criterios de temperatura (intención de INSCRIBIRSE en la formación):
-- caliente: pidió plaza, pidió precio concreto del programa, preguntó fechas de inicio, o mostró intención clara de apuntarse.
-- templado: interesado pero con dudas o sin cerrar; conversación abierta.
+- caliente: pidió plaza, pidió precio concreto del programa, preguntó fechas de inicio, o mostró intención clara de apuntarse CON SUS PROPIAS PALABRAS (no cuenta la apertura plantilla de la web por sí sola — ver arriba).
+- templado: interesado pero con dudas o sin cerrar; conversación abierta; o el único mensaje del lead es la apertura automática de la web sin desarrollo posterior.
 - frio: sin respuesta reciente, rechazo explícito, o consulta ya resuelta sin continuidad comercial.
 
 Etiquetas útiles (ejemplos): "quiere inscribirse", "pide precio programa", "pide info programa", "duda financiación", "pregunta fechas", "no contesta", "ya inscrito", "pregunta general". No inventes datos ni precios. Sé conciso.

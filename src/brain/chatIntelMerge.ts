@@ -14,6 +14,7 @@
  * reemplazan), así una etiqueta o interés detectado una vez no desaparece.
  */
 import { getSupabase } from "./supabase";
+import { capEtiquetas } from "./etiquetasCap";
 
 export interface ChatIntelAiFields {
   producto?: string | null;
@@ -42,7 +43,17 @@ function mergeIntereses(
   return out.length ? out : null;
 }
 
-/** Unión de etiquetas — sin duplicados (comparación normalizada). */
+/**
+ * Unión de etiquetas — sin duplicados (comparación normalizada) y con TECHO.
+ *
+ * El techo (2026-07-27) es el único punto donde la regla "nunca se resta" se
+ * matiza, y a peticion expresa del usuario: sin él, cada re-análisis añadía y
+ * los leads más trabajados llegaban a 154 etiquetas, casi todas variantes de lo
+ * mismo. Eso degradaba `buscar_leads`, que las usa como texto de búsqueda. Se
+ * conservan las estructurales y una por familia temática — ver ./etiquetasCap.
+ * Nunca se recorta por debajo de MAX_ETIQUETAS, así que ningún lead normal
+ * (mediana 7, p90 11) se ve afectado.
+ */
 function mergeEtiquetas(prev: string[] | null | undefined, next: string[] | null | undefined): string[] | null {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -52,7 +63,8 @@ function mergeEtiquetas(prev: string[] | null | undefined, next: string[] | null
     seen.add(key);
     out.push(String(e));
   }
-  return out.length ? out : null;
+  if (!out.length) return null;
+  return capEtiquetas(out);
 }
 
 /** Trae SOLO los campos de inteligencia ya guardados para este jid (o null si no hay fila aún). */

@@ -66,8 +66,36 @@ const SCHEMA_KEYS = [
   "recomendaciones", "confianza",
 ] as const;
 
-function buildPrompt(transcript: string): string {
-  return `Eres analista comercial senior de Common Sense Aligners (CSA), que forma a dentistas con el programa SBA (Sistema de Biomecánica Avanzada) del Dr. Javier Lozano. Fran es el comercial. Analiza esta transcripción de una LLAMADA DE VENTA (Plaud) y evalúa CÓMO condujo Fran la llamada: qué hizo bien, qué falló y por qué esa llamada acabaría (o no) convirtiendo. NO redactes propuesta; ESTO ES EVALUACIÓN.
+/** Ejemplos de calibración que manda el dashboard (lo que Fran etiquetó como score mal puesto). */
+interface CalibracionHint {
+  cerro?: boolean;
+  score?: number;
+  veredictoHumano?: "mejor" | "peor";
+  debilidades?: string[];
+  hint?: string;
+  nota?: string | null;
+}
+
+/**
+ * Bloque de RECALIBRACIÓN: casos pasados donde el comercial (Fran) dijo que el
+ * score no encajaba con la realidad. Se inyecta en el prompt para que Fransua
+ * ajuste su rubric (aprende de sus propios errores de puntuación).
+ */
+function buildCalibracionBlock(cals: CalibracionHint[]): string {
+  const clean = cals.filter((c) => typeof c.hint === "string" && c.hint.trim()).slice(0, 8);
+  if (clean.length === 0) return "";
+  const lines = clean.map((c, i) => {
+    const cerro = c.cerro === true ? "CERRÓ (compró)" : c.cerro === false ? "NO cerró" : "resultado desconocido";
+    const score = Number.isFinite(Number(c.score)) ? `tú la puntuaste ${Math.round(Number(c.score))}` : "";
+    const deb = Array.isArray(c.debilidades) && c.debilidades.length ? ` Debilidades que marcaste: ${c.debilidades.slice(0, 3).map((d) => `«${d}»`).join("; ")}.` : "";
+    const nota = c.nota ? ` Nota de Fran: «${String(c.nota).slice(0, 300)}».` : "";
+    return `${i + 1}. Una llamada que ${cerro}${score ? `, ${score}` : ""}. El comercial dice que en realidad fue ${c.veredictoHumano === "peor" ? "PEOR" : "MEJOR"} de lo que refleja ese score.${deb} Ajuste: ${String(c.hint).trim()}${nota}`;
+  });
+  return `\n\nRECALIBRACIÓN (aprende de tus errores de puntuación anteriores — el comercial ya te corrigió en estos casos; aplica el criterio, NO los copies):\n${lines.join("\n")}\n`;
+}
+
+function buildPrompt(transcript: string, cals: CalibracionHint[] = []): string {
+  return `Eres analista comercial senior de Common Sense Aligners (CSA), que forma a dentistas con el programa SBA (Sistema de Biomecánica Avanzada) del Dr. Javier Lozano. Fran es el comercial. Analiza esta transcripción de una LLAMADA DE VENTA (Plaud) y evalúa CÓMO condujo Fran la llamada: qué hizo bien, qué falló y por qué esa llamada acabaría (o no) convirtiendo. NO redactes propuesta; ESTO ES EVALUACIÓN.${buildCalibracionBlock(cals)}
 
 Ánclate en el PLAYBOOK REAL de CSA (no coaching genérico):
 - Argumentos de peso: la mentoría/revisión de casos con el Dr. Lozano, las SESIONES EN DIRECTO (martes/jueves), la estancia clínica, la biomecánica avanzada (curva de Spee, refinamientos, previsibilidad), casos reales, prueba social (testimonios de compañeros).
@@ -191,15 +219,16 @@ function validate(obj: unknown): CallAnalysis | null {
 export function registerCallRoutes(app: FastifyInstance): void {
   // POST /calls/analyze { transcript } → evaluación de rendimiento de la llamada.
   app.post("/calls/analyze", async (req, reply) => {
-    const body = (req.body ?? {}) as { transcript?: unknown };
+    const body = (req.body ?? {}) as { transcript?: unknown; calibraciones?: unknown };
     const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
     if (!transcript) return reply.status(400).send({ ok: false, error: 'Falta "transcript".' });
     if (transcript.length < 200) {
       return reply.status(422).send({ ok: false, error: "La transcripción es demasiado corta para analizar la llamada con rigor." });
     }
+    const calibraciones: CalibracionHint[] = Array.isArray(body.calibraciones) ? (body.calibraciones as CalibracionHint[]) : [];
     const clipped = transcript.length > MAX_TRANSCRIPT_CHARS ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) : transcript;
     try {
-      const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped), suggestModel);
+      const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped, calibraciones), suggestModel);
       const analysis = raw ? validate(raw) : null;
       if (!analysis) return reply.status(503).send({ ok: false, error: "La IA no pudo analizar la llamada. Reintenta." });
       return { ok: true, analysis };

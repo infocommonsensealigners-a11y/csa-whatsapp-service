@@ -15,7 +15,7 @@ import { getDb, setMeta } from "../db/db";
 import { emitSse } from "../http/sse";
 import { config } from "../config";
 import { getWaState, requestOlderHistory } from "./socket";
-import type { BackfillProgress } from "../../../shared/whatsapp-contracts";
+import type { BackfillProgress } from "../shared/whatsapp-contracts";
 
 const PAGE_SIZE = 50;
 const MAX_PAGES_PER_CHAT = 40; // tope de seguridad (~2000 msgs/chat)

@@ -11,7 +11,7 @@
 import type { FastifyInstance } from "fastify";
 import { getDb } from "../../db/db";
 import { emitSse } from "../sse";
-import type { ChatSummary, WaMessage } from "../../../../shared/whatsapp-contracts";
+import type { ChatSummary, WaMessage } from "../../shared/whatsapp-contracts";
 
 interface ChatRow {
   jid: string;

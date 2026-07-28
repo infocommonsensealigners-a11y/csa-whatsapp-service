@@ -122,10 +122,11 @@ const buscarLeads = tool(
     const lineas = rows.slice(0, 60).map((r: any) => {
       const cliente = Array.isArray(r.etiquetas) && r.etiquetas.some((e: any) => String(e).toLowerCase() === "cliente") ? " · CLIENTE" : "";
       const fila = r.source_row != null ? ` (fila ${r.source_row})` : " (sin fila CRM)";
-      return `- ${r.display_name ?? "?"}${fila} · ${r.temperatura ?? "?"}${r.producto ? ` · ${r.producto}` : ""}${cliente}`;
+      const tel = r.phone ? ` · tel ${r.phone}` : "";
+      return `- ${r.display_name ?? "?"}${fila}${tel} · ${r.temperatura ?? "?"}${r.producto ? ` · ${r.producto}` : ""}${cliente}`;
     });
     const out = rows.length
-      ? `${rows.length} leads coinciden con "${args.texto}" (máx 60 listados; usa el nº de fila como sourceRow):\n${lineas.join("\n")}`
+      ? `${rows.length} leads coinciden con "${args.texto}" (máx 60 listados; para vistas del CRM usa el TELÉFONO como identidad, la fila solo como apoyo):\n${lineas.join("\n")}`
       : `Ningún lead coincide con "${args.texto}".`;
     return txt(out);
   }
@@ -246,6 +247,44 @@ const dormidosReactivables = tool(
         `(≥${diasMin}d en silencio, temperatura caliente/templado, sin clientes). ${rows.length > 40 ? "Muestro los 40 más calientes:" : ""}\n` +
         lineas.join("\n")
     );
+  }
+);
+
+/** LECTURA de la agenda (auditoría 2026-07-28): Fransua CREABA eventos pero no
+ *  podía consultarlos — respondía a "¿qué tengo mañana?" a ciegas, o proponía
+ *  citas encima de otras. Lee calendar_events (la misma fuente que la app). */
+const consultarAgenda = tool(
+  "consultar_agenda",
+  "Consulta la AGENDA de Fran: eventos, recordatorios y avisos ya programados. Úsala SIEMPRE antes de responder qué tiene Fran un día, o antes de proponer/crear una cita (para no solapar). Devuelve los eventos del rango pedido (por defecto, próximos 7 días).",
+  {
+    dias: z.number().optional().describe("cuántos días hacia delante mirar desde hoy (por defecto 7, máx 60)"),
+    desde: z.string().optional().describe("inicio del rango en ISO 8601 (por defecto hoy a las 00:00, Europe/Madrid)"),
+  },
+  async (args: { dias?: number; desde?: string }) => {
+    if (!brainConfigured()) return txt("Agenda no disponible.");
+    const sb = getSupabase();
+    const now = new Date();
+    const desde = args.desde && !Number.isNaN(new Date(args.desde).getTime())
+      ? new Date(args.desde)
+      : new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const dias = Math.min(Math.max(Number(args.dias) || 7, 1), 60);
+    const hasta = new Date(desde.getTime() + dias * 86400_000);
+    const { data, error } = await sb
+      .from("calendar_events")
+      .select("id,titulo,descripcion,start_at,end_at,all_day,tipo,origen,phone,source_row")
+      .neq("status", "cancelled")
+      .gte("start_at", desde.toISOString())
+      .lte("start_at", hasta.toISOString())
+      .order("start_at", { ascending: true })
+      .limit(120);
+    if (error) return txt("Error leyendo la agenda: " + error.message);
+    const rows = data ?? [];
+    if (rows.length === 0) return txt(`La agenda está VACÍA entre ${fmtMadrid(desde)} y ${fmtMadrid(hasta)}.`);
+    const lineas = rows.map((e: any) => {
+      const cuando = e.all_day ? `${fmtDay(Math.floor(new Date(e.start_at).getTime() / 1000))} (todo el día)` : fmtMadrid(new Date(e.start_at));
+      return `- ${cuando} · [${e.tipo}] ${e.titulo}${e.origen === "fransua" ? " (creado por ti)" : ""}${e.phone ? ` · tel ${e.phone}` : ""}`;
+    });
+    return txt(`${rows.length} elementos en la agenda (${fmtMadrid(desde)} → ${fmtMadrid(hasta)}):\n${lineas.join("\n")}`);
   }
 );
 
@@ -429,6 +468,7 @@ const READ_TOOL_NAMES = [
   "mcp__fransua__buscar_leads",
   "mcp__fransua__conversacion_lead",
   "mcp__fransua__dormidos_reactivables",
+  "mcp__fransua__consultar_agenda",
 ];
 const WRITE_TOOL_NAMES = [
   "mcp__fransua__crear_evento_agenda",
@@ -453,7 +493,7 @@ export async function runAgent(prompt: string, model?: string, actor?: string): 
   const fransuaMcpServer = createSdkMcpServer({
     name: "fransua",
     version: "1.0.0",
-    tools: [fichaLead, fotoNegocio, buscarLeads, conversacionLead, dormidosReactivables, ...writeTools],
+    tools: [fichaLead, fotoNegocio, buscarLeads, conversacionLead, dormidosReactivables, consultarAgenda, ...writeTools],
   });
 
   const q = query({

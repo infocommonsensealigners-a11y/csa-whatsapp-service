@@ -14,8 +14,14 @@ import { googleConfigured, pushEvent } from "./googleCalendar";
 import { insertConPhoneSelect } from "./phoneColumn";
 
 const COLS =
-  "id,source_row,jid,titulo,descripcion,start_at,end_at,all_day,tipo,origen,color,google_event_id,status,created_at,updated_at";
-const TIPOS = new Set(["cita", "formacion", "llamada", "seguimiento", "otro"]);
+  "id,source_row,jid,phone,titulo,descripcion,start_at,end_at,all_day,tipo,origen,color,google_event_id,status,created_at,updated_at";
+/** Tipo LIBRE (auditoría 2026-07-28): el catálogo de tipos del dashboard es
+ *  DINÁMICO (el usuario crea los suyos) — la lista cerrada de aquí degradaba
+ *  cualquier tipo nuevo a "cita". Misma sanitización que routes/calendar.ts. */
+function normTipo(v: unknown, fallback = "cita"): string {
+  const s = typeof v === "string" ? v.trim().slice(0, 60) : "";
+  return s || fallback;
+}
 
 export interface AgendaInput {
   titulo: string;
@@ -51,7 +57,7 @@ export async function createAgendaEvent(input: AgendaInput): Promise<AgendaResul
     start_at: start.toISOString(),
     end_at: input.end_at ? new Date(input.end_at).toISOString() : null,
     all_day: !!input.all_day,
-    tipo: TIPOS.has(String(input.tipo)) ? String(input.tipo) : "cita",
+    tipo: normTipo(input.tipo),
     origen: input.origen === "humano" ? "humano" : "fransua",
     source_row: Number.isFinite(Number(input.source_row)) ? Number(input.source_row) : null,
     jid: input.jid ? String(input.jid) : null,

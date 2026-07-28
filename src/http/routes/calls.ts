@@ -94,13 +94,41 @@ function buildCalibracionBlock(cals: CalibracionHint[]): string {
   return `\n\nRECALIBRACIÓN (aprende de tus errores de puntuación anteriores — el comercial ya te corrigió en estos casos; aplica el criterio, NO los copies):\n${lines.join("\n")}\n`;
 }
 
-function buildPrompt(transcript: string, cals: CalibracionHint[] = []): string {
-  return `Eres analista comercial senior de Common Sense Aligners (CSA), que forma a dentistas con el programa SBA (Sistema de Biomecánica Avanzada) del Dr. Javier Lozano. Fran es el comercial. Analiza esta transcripción de una LLAMADA DE VENTA (Plaud) y evalúa CÓMO condujo Fran la llamada: qué hizo bien, qué falló y por qué esa llamada acabaría (o no) convirtiendo. NO redactes propuesta; ESTO ES EVALUACIÓN.${buildCalibracionBlock(cals)}
+/** Programa de la llamada (auditoría 2026-07-28): antes el prompt SIEMPRE
+ *  hablaba de SBA y sus precios → en llamadas de la Certificación Invisalign el
+ *  análisis evaluaba con la oferta equivocada (2.900€/241,66€/mes, SIN pronto
+ *  pago) y el sesgo entraba además en la recalibración. Mismos datos que
+ *  dashboard/lib/domain/conectoresProgramas.ts. */
+type ProgramaKey = "sba" | "cert";
+const PROGRAMA_BRIEF: Record<ProgramaKey, { nombre: string; oferta: string }> = {
+  sba: {
+    nombre: "SBA (Sistema de Biomecánica Avanzada)",
+    oferta: "PRECIO (financiación 325€×12, 5.900→3.900, 10% dto. por pago único, ROI), estancia clínica incluida",
+  },
+  cert: {
+    nombre: "Certificación en Ortodoncia Plástica (para doctores que ya usan Invisalign/Spark)",
+    oferta: "PRECIO (financiación 241,66€×12, total 2.900€ — SIN descuento por pago único, ROI)",
+  },
+};
+function normPrograma(v: unknown): ProgramaKey | null {
+  const s = String(v ?? "").toLowerCase();
+  if (/cert|invisalign|plastic/.test(s)) return "cert";
+  if (/sba|biomec/.test(s)) return "sba";
+  return null;
+}
+
+function buildPrompt(transcript: string, cals: CalibracionHint[] = [], programa: ProgramaKey | null = null): string {
+  const prog = programa ? PROGRAMA_BRIEF[programa] : null;
+  const contextoPrograma = prog
+    ? `Esta llamada es del programa ${prog.nombre} — evalúa contra ESA oferta, no contra otro programa.`
+    : `CSA vende DOS programas: ${PROGRAMA_BRIEF.sba.nombre} y ${PROGRAMA_BRIEF.cert.nombre}. Deduce cuál se está vendiendo y evalúa contra la oferta de ESE programa (no los mezcles).`;
+  const objecionPrecio = prog ? prog.oferta : `según el programa — SBA: ${PROGRAMA_BRIEF.sba.oferta}; Certificación: ${PROGRAMA_BRIEF.cert.oferta}`;
+  return `Eres analista comercial senior de Common Sense Aligners (CSA), que forma a dentistas con los programas del Dr. Javier Lozano. Fran es el comercial. ${contextoPrograma} Analiza esta transcripción de una LLAMADA DE VENTA (Plaud) y evalúa CÓMO condujo Fran la llamada: qué hizo bien, qué falló y por qué esa llamada acabaría (o no) convirtiendo. NO redactes propuesta; ESTO ES EVALUACIÓN.${buildCalibracionBlock(cals)}
 
 Ánclate en el PLAYBOOK REAL de CSA (no coaching genérico):
 - Argumentos de peso: la mentoría/revisión de casos con el Dr. Lozano, las SESIONES EN DIRECTO (martes/jueves), la estancia clínica, la biomecánica avanzada (curva de Spee, refinamientos, previsibilidad), casos reales, prueba social (testimonios de compañeros).
 - Buena cualificación: ¿es dentista?, ¿qué sistema/marca usa (Invisalign/Spark…)?, ¿volumen de casos?, ¿es decisor?, ¿su dolor concreto? (descalifica limpio a protésicos/higienistas o sistemas incompatibles).
-- Objeciones típicas y sus técnicas: PRECIO (financiación 325€×12, 5.900→3.900, 10% pronto pago, ROI), "me lo pienso", falta de tiempo/agenda, "ya hago Invisalign", sistema propio, desconfianza del método.
+- Objeciones típicas y sus técnicas: ${objecionPrecio}; "me lo pienso", falta de tiempo/agenda, "ya hago Invisalign", sistema propio, desconfianza del método.
 - Cierre bueno: pedir el cierre (ASK), ofrecer cita POR ELECCIÓN (2 franjas, no "¿cuándo te viene?"), dejar un próximo paso con FECHA concreta.
 - Señales de compra: pregunta por pago/fechas, preguntas operativas, proyecta usarlo con un caso concreto, pide detalles del acceso.
 
@@ -219,7 +247,7 @@ function validate(obj: unknown): CallAnalysis | null {
 export function registerCallRoutes(app: FastifyInstance): void {
   // POST /calls/analyze { transcript } → evaluación de rendimiento de la llamada.
   app.post("/calls/analyze", async (req, reply) => {
-    const body = (req.body ?? {}) as { transcript?: unknown; calibraciones?: unknown };
+    const body = (req.body ?? {}) as { transcript?: unknown; calibraciones?: unknown; programa?: unknown };
     const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
     if (!transcript) return reply.status(400).send({ ok: false, error: 'Falta "transcript".' });
     if (transcript.length < 200) {
@@ -228,7 +256,7 @@ export function registerCallRoutes(app: FastifyInstance): void {
     const calibraciones: CalibracionHint[] = Array.isArray(body.calibraciones) ? (body.calibraciones as CalibracionHint[]) : [];
     const clipped = transcript.length > MAX_TRANSCRIPT_CHARS ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) : transcript;
     try {
-      const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped, calibraciones), suggestModel);
+      const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped, calibraciones, normPrograma(body.programa)), suggestModel);
       const analysis = raw ? validate(raw) : null;
       if (!analysis) return reply.status(503).send({ ok: false, error: "La IA no pudo analizar la llamada. Reintenta." });
       return { ok: true, analysis };

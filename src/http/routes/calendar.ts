@@ -35,8 +35,18 @@ async function syncToGoogle(event: any): Promise<string | null> {
   }
 }
 
+// `phone` (auditoría 2026-07-28): identidad ESTABLE del lead del evento — la
+// columna existía en Supabase y se escribía desde algunos flujos, pero NO se
+// leía ni se aceptaba en el POST → eventos huérfanos de su lead.
 const COLS =
-  "id,source_row,jid,titulo,descripcion,start_at,end_at,all_day,tipo,origen,color,google_event_id,status,created_at,updated_at";
+  "id,source_row,jid,phone,titulo,descripcion,start_at,end_at,all_day,tipo,origen,color,google_event_id,status,created_at,updated_at";
+
+/** Teléfono canónico (9 dígitos ES) o null. */
+function normPhone(v: unknown): string | null {
+  const d = String(v ?? "").replace(/\D/g, "").replace(/^0+/, "");
+  const p = d.startsWith("34") && d.length === 11 ? d.slice(2) : d;
+  return /^[6789]\d{8}$/.test(p) ? p : d.length >= 8 ? d : null;
+}
 
 /** Tipo de evento: string libre (la key del catálogo DINÁMICO del dashboard).
  *  Ya no hay lista cerrada — el usuario crea sus propios tipos. Se sanea a un
@@ -103,6 +113,7 @@ export function registerCalendarRoutes(app: FastifyInstance): void {
       origen: b.origen === "fransua" ? "fransua" : "humano",
       source_row: Number.isFinite(Number(b.source_row)) ? Number(b.source_row) : null,
       jid: b.jid ? String(b.jid) : null,
+      phone: normPhone(b.phone ?? b.telefono),
       color: b.color ? String(b.color) : null,
       status: "active",
     };
@@ -145,6 +156,7 @@ export function registerCalendarRoutes(app: FastifyInstance): void {
           origen: "humano" as const,
           source_row: Number.isFinite(Number(b.source_row)) ? Number(b.source_row) : null,
           jid: b.jid ? String(b.jid) : null,
+          phone: normPhone(b.phone ?? b.telefono),
           color: b.color ? String(b.color) : null,
           status: "active" as const,
         };
@@ -202,6 +214,7 @@ export function registerCalendarRoutes(app: FastifyInstance): void {
     if (b.tipo != null && String(b.tipo).trim()) patch.tipo = normTipo(b.tipo);
     if (b.source_row !== undefined) patch.source_row = Number.isFinite(Number(b.source_row)) ? Number(b.source_row) : null;
     if (b.jid !== undefined) patch.jid = b.jid ? String(b.jid) : null;
+    if (b.phone !== undefined || b.telefono !== undefined) patch.phone = normPhone(b.phone ?? b.telefono);
     if (b.color !== undefined) patch.color = b.color ? String(b.color) : null;
     if (b.status != null) patch.status = String(b.status);
 

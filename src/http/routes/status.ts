@@ -11,7 +11,7 @@ import { aiQueuePending, getMeta, statusCounts } from "../../db/db";
 import { getMe, getQrDataUrl, getWaState, resetSession } from "../../wa/socket";
 import { runSidecarBackup } from "../../brain/backup";
 import { brainConfigured } from "../../brain/supabase";
-import type { WaStatus } from "../../../../shared/whatsapp-contracts";
+import type { WaStatus } from "../../shared/whatsapp-contracts";
 
 export function registerStatusRoutes(app: FastifyInstance): void {
   // Backup de wa.sqlite3 (60k+ mensajes) — ver src/brain/backup.ts. Solo se
@@ -21,7 +21,15 @@ export function registerStatusRoutes(app: FastifyInstance): void {
     enabled: brainConfigured(),
     lastDay: getMeta("backup_last_day"),
   }));
-  app.post("/backup/run", async () => runSidecarBackup(true));
+  // /backup/run mueve datos reales a Supabase Storage → mismo token de admin
+  // que /admin/* (auditoría 2026-07-28: antes estaba abierto a cualquiera con
+  // acceso de red al sidecar; el GET /backup/status sigue libre, solo informa).
+  const ADMIN_TOKEN = (process.env.WA_ADMIN_TOKEN ?? "csa-migrate-2026").trim();
+  app.post("/backup/run", async (req, reply) => {
+    const got = String((req.headers["x-admin-token"] as string | undefined) ?? "").trim();
+    if (got !== ADMIN_TOKEN) return reply.status(401).send({ ok: false, error: "token inválido" });
+    return runSidecarBackup(true);
+  });
 
   app.get("/health", async () => ({
     ok: true,

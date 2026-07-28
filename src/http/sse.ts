@@ -5,7 +5,7 @@
  * proxies/navegadores no cierren la conexión por inactividad.
  */
 import type { ServerResponse } from "node:http";
-import type { WaSseEvent } from "../../../shared/whatsapp-contracts";
+import type { WaSseEvent } from "../shared/whatsapp-contracts";
 
 const clients = new Set<ServerResponse>();
 let heartbeat: NodeJS.Timeout | null = null;

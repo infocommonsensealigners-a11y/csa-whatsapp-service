@@ -31,7 +31,7 @@ import QRCode from "qrcode";
 import fs from "node:fs";
 import { config } from "../config";
 import { isGroupJid, isNewsletterJid } from "./jidPhone";
-import type { WaConnectionState } from "../../../shared/whatsapp-contracts";
+import type { WaConnectionState } from "../shared/whatsapp-contracts";
 
 const log = pino({ level: "info", base: undefined });
 // Baileys es muy verboso; solo nos interesan sus warnings/errores.

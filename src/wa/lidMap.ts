@@ -19,6 +19,7 @@
  */
 import { getDb } from "../db/db";
 import { SPANISH_MOBILE_PATTERN } from "./jidPhone";
+import { lookupLids } from "./socket";
 
 /** '34600111222@s.whatsapp.net' | '34600111222' → '600111222' si es móvil ES; si no, null. */
 export function pnToSpanishPhone(pn: string | null | undefined): string | null {
@@ -156,4 +157,86 @@ export function backfillLidPhones(): LidBackfillResult {
     sinSenderPn: lidChats.length - found.length,
     duplicados,
   };
+}
+
+export interface ResolveByPhoneRow {
+  phone: string;
+  /** ¿Ese número tiene cuenta de WhatsApp? */
+  enWhatsapp: boolean;
+  lid: string | null;
+  /** true si TENEMOS una conversación con ese LID (¡su chat oculto localizado!). */
+  chatLocalizado: boolean;
+  chatNombre: string | null;
+  /** true si se acaba de rellenar el teléfono de ese chat. */
+  rellenado: boolean;
+}
+
+/**
+ * ÚLTIMA VÍA para los chats `@lid` cuyo teléfono no venía en `senderPn` (chats
+ * donde solo escribimos nosotros, o anteriores a ese campo): se le pregunta a
+ * WhatsApp el LID de cada teléfono del CRM y se cruza con nuestras
+ * conversaciones. Consulta de solo lectura (ver socket.lookupLids).
+ *
+ * Se procesa en tandas de 20 con una pausa breve: son pocas consultas y del
+ * mismo tipo que hace la app al abrir un contacto, pero no conviene ráfagas.
+ */
+export async function resolvePhonesToLids(phones: string[]): Promise<ResolveByPhoneRow[]> {
+  const db = getDb();
+  const limpios = Array.from(
+    new Set(
+      phones
+        .map((p) => String(p ?? "").replace(/\D/g, "").slice(-9))
+        .filter((p) => SPANISH_MOBILE_PATTERN.test(p))
+    )
+  );
+  const out: ResolveByPhoneRow[] = [];
+
+  for (let i = 0; i < limpios.length; i += 20) {
+    const tanda = limpios.slice(i, i + 20);
+    const res = await lookupLids(tanda.map((p) => `34${p}@s.whatsapp.net`));
+    const porTelefono = new Map<string, { exists: boolean; lid: string | null }>();
+    for (const r of res) {
+      const key = r.jid.split("@")[0].replace(/\D/g, "").slice(-9);
+      porTelefono.set(key, { exists: r.exists, lid: r.lid });
+    }
+    for (const phone of tanda) {
+      const r = porTelefono.get(phone);
+      const lid = r?.lid ?? null;
+      let chatNombre: string | null = null;
+      let chatLocalizado = false;
+      let rellenado = false;
+      if (lid) {
+        // Se guarda el mapeo aunque todavía no exista el chat: si esa persona
+        // escribe mañana, su conversación ya nace identificada.
+        db.prepare(
+          `INSERT INTO wa_lid_map(lid, pn, phone, source, created_at)
+           VALUES (@lid, @pn, @phone, 'onWhatsApp', @now)
+           ON CONFLICT(lid) DO UPDATE SET
+             pn = excluded.pn,
+             phone = COALESCE(excluded.phone, wa_lid_map.phone)`
+        ).run({ lid, pn: `34${phone}@s.whatsapp.net`, phone, now: Math.floor(Date.now() / 1000) });
+        const chat = db.prepare("SELECT jid, display_name, phone FROM chats WHERE jid = ?").get(lid) as
+          | { jid: string; display_name: string | null; phone: string | null }
+          | undefined;
+        if (chat) {
+          chatLocalizado = true;
+          chatNombre = chat.display_name ?? null;
+          const upd = db
+            .prepare("UPDATE chats SET phone = @phone WHERE jid = @jid AND (phone IS NULL OR phone = '')")
+            .run({ phone, jid: lid });
+          rellenado = upd.changes > 0;
+        }
+      }
+      out.push({
+        phone,
+        enWhatsapp: Boolean(r?.exists),
+        lid,
+        chatLocalizado,
+        chatNombre,
+        rellenado,
+      });
+    }
+    if (i + 20 < limpios.length) await new Promise((r) => setTimeout(r, 1500));
+  }
+  return out;
 }

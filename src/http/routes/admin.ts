@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getDb, statusCounts } from "../../db/db";
 import { config } from "../../config";
-import { backfillLidPhones } from "../../wa/lidMap";
+import { backfillLidPhones, resolvePhonesToLids } from "../../wa/lidMap";
 
 const TOKEN = (process.env.WA_ADMIN_TOKEN ?? "csa-migrate-2026").trim();
 
@@ -74,6 +74,36 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     if (provided !== TOKEN) return reply.status(401).send({ ok: false, error: "token inválido" });
     try {
       return { ok: true, ...backfillLidPhones() };
+    } catch (e) {
+      return reply.status(500).send({ ok: false, error: (e as Error).message });
+    }
+  });
+
+  /**
+   * Localiza la conversación OCULTA de unos teléfonos: pregunta a WhatsApp el LID
+   * de cada número (solo lectura) y lo cruza con nuestros chats `@lid`. Es la
+   * última vía para los que no traían el teléfono en senderPn. Máximo 100 por
+   * llamada (son consultas a WhatsApp; nada de ráfagas).
+   */
+  app.post("/admin/resolve-lids", async (request, reply) => {
+    const body = request.body as { token?: string; phones?: unknown } | null;
+    const q = request.query as { t?: string } | undefined;
+    const provided = String(body?.token ?? q?.t ?? request.headers["x-wa-admin"] ?? "");
+    if (provided !== TOKEN) return reply.status(401).send({ ok: false, error: "token inválido" });
+    const phones = Array.isArray(body?.phones) ? body!.phones.map((p) => String(p)) : [];
+    if (phones.length === 0) return reply.status(400).send({ ok: false, error: "phones vacío" });
+    if (phones.length > 100) return reply.status(400).send({ ok: false, error: "máximo 100 teléfonos por llamada" });
+    try {
+      const rows = await resolvePhonesToLids(phones);
+      return {
+        ok: true,
+        consultados: rows.length,
+        enWhatsapp: rows.filter((r) => r.enWhatsapp).length,
+        conLid: rows.filter((r) => r.lid).length,
+        chatsLocalizados: rows.filter((r) => r.chatLocalizado).length,
+        rellenados: rows.filter((r) => r.rellenado).length,
+        rows,
+      };
     } catch (e) {
       return reply.status(500).send({ ok: false, error: (e as Error).message });
     }

@@ -108,6 +108,33 @@ export async function fetchProfilePicture(jid: string): Promise<string | null> {
 }
 
 /**
+ * Pregunta a WhatsApp el LID (identificador oculto) de unos teléfonos.
+ *
+ * Es una consulta USync de SOLO LECTURA — la misma que hace la app al abrir un
+ * contacto para saber si está en WhatsApp: NO escribe, NO notifica al contacto y
+ * no aparece en su móvil. Sirve para cerrar el círculo de los chats `@lid` cuyo
+ * número no pudimos rescatar de `senderPn` (ver wa/lidMap.ts): sabiendo el LID
+ * de un teléfono del CRM, se identifica su conversación oculta.
+ *
+ * Devuelve [] si no hay conexión. Nunca lanza.
+ */
+export async function lookupLids(
+  jids: string[]
+): Promise<Array<{ jid: string; exists: boolean; lid: string | null }>> {
+  if (!sock || state !== "open" || jids.length === 0) return [];
+  try {
+    const res = await sock.onWhatsApp(...jids);
+    return (res ?? []).map((r) => ({
+      jid: String((r as { jid?: unknown }).jid ?? ""),
+      exists: Boolean((r as { exists?: unknown }).exists),
+      lid: (r as { lid?: unknown }).lid ? String((r as { lid?: unknown }).lid) : null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Pide a WhatsApp un tramo de historial ANTERIOR a un mensaje dado (on-demand).
  * NO envía nada a ningún contacto: es una petición de datos al servidor de
  * WhatsApp; la respuesta llega de forma asíncrona como `messaging-history.set`

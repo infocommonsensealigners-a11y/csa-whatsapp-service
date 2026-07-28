@@ -22,6 +22,7 @@ import { getLeadContext360 } from "../brain/leadContext";
 import { getBusinessSnapshot } from "../brain/businessSnapshot";
 import { getSupabase, brainConfigured } from "../brain/supabase";
 import { createAgendaEvent } from "../brain/agenda";
+import { insertConPhone } from "../brain/phoneColumn";
 import { logActionAudit } from "../brain/audit";
 import { storeLeccion } from "../brain/lecciones";
 import { getDb } from "../db/db";
@@ -295,6 +296,7 @@ function buildWriteTools(actor: string) {
         descripcion: args.descripcion ?? null,
         source_row: ref.source_row,
         jid: ref.jid,
+        phone: ref.phone, // identidad estable (ver phoneColumn.ts)
         origen: "fransua",
       });
       if (!r.ok) {
@@ -325,14 +327,19 @@ function buildWriteTools(actor: string) {
       const due = new Date(args.cuando);
       if (Number.isNaN(due.getTime())) return txt("No entendí la fecha. Pídele a Fran para cuándo es el recordatorio.");
       // 1) Recordatorio (tabla reminders — paridad con el flujo de notas).
-      await sb.from("reminders").insert({
-        source_row: ref.source_row,
-        jid: ref.jid,
-        titulo: args.titulo,
-        detalle: args.detalle ?? null,
-        due_at: due.toISOString(),
-        origen: "fransua",
-      });
+      await insertConPhone(
+        sb,
+        "reminders",
+        {
+          source_row: ref.source_row,
+          jid: ref.jid,
+          titulo: args.titulo,
+          detalle: args.detalle ?? null,
+          due_at: due.toISOString(),
+          origen: "fransua",
+        },
+        ref.phone
+      );
       // 2) Agendar de verdad (visible + Google/iPhone).
       const r = await createAgendaEvent({
         titulo: `Seguimiento: ${args.titulo}`,
@@ -342,6 +349,7 @@ function buildWriteTools(actor: string) {
         descripcion: args.detalle ?? null,
         source_row: ref.source_row,
         jid: ref.jid,
+        phone: ref.phone, // identidad estable (ver phoneColumn.ts)
         origen: "fransua",
       });
       audit("crear_recordatorio", { titulo: args.titulo, cuando: due.toISOString() }, r.ok ? "ok" : "error: " + r.error, ref);
@@ -382,6 +390,7 @@ function buildWriteTools(actor: string) {
         descripcion: args.detalle ?? null,
         source_row: ref.source_row,
         jid: ref.jid,
+        phone: ref.phone, // identidad estable (ver phoneColumn.ts)
         origen: "fransua",
       });
       if (!r.ok) {

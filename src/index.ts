@@ -10,6 +10,7 @@ import { registerIngest } from "./wa/ingest";
 import { startWhatsapp, stopWhatsapp, onStateChange } from "./wa/socket";
 import { ensureClaudeAuth } from "./brain/secrets";
 import { startLeadLinkingScheduler } from "./brain/linkLeadsScheduler";
+import { startBackupScheduler } from "./brain/backup";
 import { startLearningScheduler } from "./brain/learning";
 
 async function main(): Promise<void> {
@@ -72,6 +73,14 @@ async function main(): Promise<void> {
     startLearningScheduler();
   } catch (e) {
     console.error("[learn] no se pudo arrancar el aprendizaje automático:", (e as Error).message);
+  }
+
+  // Backup diario de wa.sqlite3 a Supabase Storage (60k+ mensajes que solo
+  // vivían en el volumen). Best-effort — nunca tumba el arranque.
+  try {
+    startBackupScheduler();
+  } catch (e) {
+    console.error("[backup-sidecar] no se pudo arrancar el backup automático:", (e as Error).message);
   }
 
   console.log(`[http] Sidecar WhatsApp escuchando en http://${config.host}:${config.port}`);

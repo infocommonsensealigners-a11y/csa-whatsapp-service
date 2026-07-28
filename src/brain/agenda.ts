@@ -11,6 +11,7 @@
  */
 import { getSupabase } from "./supabase";
 import { googleConfigured, pushEvent } from "./googleCalendar";
+import { insertConPhoneSelect } from "./phoneColumn";
 
 const COLS =
   "id,source_row,jid,titulo,descripcion,start_at,end_at,all_day,tipo,origen,color,google_event_id,status,created_at,updated_at";
@@ -25,6 +26,9 @@ export interface AgendaInput {
   descripcion?: string | null;
   source_row?: number | null;
   jid?: string | null;
+  /** Teléfono canónico del lead — IDENTIDAD ESTABLE (source_row es posicional y
+   *  se corrompe al mover filas del Sheet; auditoría 2026-07-28, eje 0.6). */
+  phone?: string | null;
   /** 'fransua' por defecto (lo crea el cerebro). */
   origen?: "fransua" | "humano";
 }
@@ -55,7 +59,17 @@ export async function createAgendaEvent(input: AgendaInput): Promise<AgendaResul
   };
 
   const sb = getSupabase();
-  const { data, error } = await sb.from("calendar_events").insert(record).select(COLS).single();
+  // Se guarda también el TELÉFONO (identidad estable). Tolerante a que la
+  // columna aún no exista — ver src/brain/phoneColumn.ts.
+  const { data, error } = await insertConPhoneSelect<{
+    id?: number;
+    titulo: string;
+    start_at: string;
+    descripcion?: string | null;
+    end_at?: string | null;
+    all_day?: boolean;
+    google_event_id?: string | null;
+  }>(sb, "calendar_events", record, input.phone, COLS);
   if (error) return { ok: false, error: error.message };
 
   // Espejo a Google (best-effort) — no bloquea si falla.

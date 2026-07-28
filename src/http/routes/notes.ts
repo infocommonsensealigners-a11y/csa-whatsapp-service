@@ -26,6 +26,7 @@ import { runJson, runText, suggestModel } from "../../ai/agent";
 import { getPlanContext } from "../../brain/plan";
 import { getBusinessSnapshot } from "../../brain/businessSnapshot";
 import { logActionAudit } from "../../brain/audit";
+import { insertConPhone } from "../../brain/phoneColumn";
 import { getEstrategiaCSA } from "../../brain/estrategia";
 import { runAgent, agentModel } from "../../ai/agentTools";
 import { runLearning } from "../../brain/learning";
@@ -245,29 +246,41 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     }
 
     // Memoria del lead (recuerdo textual; el embedding se rellenará en una pasada posterior).
-    await sb.from("conversation_memory").insert({
-      jid,
-      source_row: sourceRow,
-      content: `[nota de ${body.author || "Fran"}] ${interp?.nota_limpia || text}`,
-      model: interp ? suggestModel : null,
-    });
+    // Se guarda el TELÉFONO además del source_row: la fila es posicional y se
+    // corrompe al reordenar el Sheet (auditoría 2026-07-28, eje 0.6).
+    await insertConPhone(
+      sb,
+      "conversation_memory",
+      {
+        jid,
+        source_row: sourceRow,
+        content: `[nota de ${body.author || "Fran"}] ${interp?.nota_limpia || text}`,
+        model: interp ? suggestModel : null,
+      },
+      phone
+    );
     applied.push("Nota guardada en la memoria de Fransua");
 
     // Registro de la nota + interpretación completa (parte diario de decisiones).
-    await sb.from("fransua_log").insert({
-      kind: "human_note",
-      source_row: sourceRow,
-      payload: {
-        at: new Date().toISOString(),
-        author: body.author || "Fran",
-        jid,
-        phone,
-        name,
-        text,
-        interpretation: interp,
-        aiError,
+    await insertConPhone(
+      sb,
+      "fransua_log",
+      {
+        kind: "human_note",
+        source_row: sourceRow,
+        payload: {
+          at: new Date().toISOString(),
+          author: body.author || "Fran",
+          jid,
+          phone,
+          name,
+          text,
+          interpretation: interp,
+          aiError,
+        },
       },
-    });
+      phone
+    );
 
     // 3) PROPONER LO DELICADO (no se aplica sin confirmación).
     if (interp?.estado_sugerido && sourceRow) {
@@ -731,26 +744,35 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const sourceRow = Number.isFinite(body.sourceRow) ? Number(body.sourceRow) : null;
     const sb = getSupabase();
 
-    // 1) Recordatorio (tabla reminders, compat con lo previo).
-    const { error } = await sb.from("reminders").insert({
-      source_row: sourceRow, jid: body.jid ?? null, titulo: body.titulo, due_at: due, origen: "fransua",
-    });
+    // 1) Recordatorio (tabla reminders, compat con lo previo). Con TELÉFONO
+    //    además del source_row (identidad estable, ver phoneColumn.ts).
+    const { error } = await insertConPhone(
+      sb,
+      "reminders",
+      { source_row: sourceRow, jid: body.jid ?? null, titulo: body.titulo, due_at: due, origen: "fransua" },
+      body.phone
+    );
     if (error) return reply.status(502).send({ ok: false, error: error.message });
 
     // 2) AGENDAR DE VERDAD: crea el evento en la agenda (calendar_events) para que
     //    el seguimiento sea VISIBLE en el calendario, no solo un recordatorio suelto.
     let agendado = false;
     try {
-      const { error: calErr } = await sb.from("calendar_events").insert({
-        titulo: `Seguimiento: ${body.titulo}`.slice(0, 300),
-        start_at: due,
-        all_day: false,
-        tipo: "seguimiento",
-        origen: "fransua",
-        source_row: sourceRow,
-        jid: body.jid ?? null,
-        status: "active",
-      });
+      const { error: calErr } = await insertConPhone(
+        sb,
+        "calendar_events",
+        {
+          titulo: `Seguimiento: ${body.titulo}`.slice(0, 300),
+          start_at: due,
+          all_day: false,
+          tipo: "seguimiento",
+          origen: "fransua",
+          source_row: sourceRow,
+          jid: body.jid ?? null,
+          status: "active",
+        },
+        body.phone
+      );
       agendado = !calErr;
       if (calErr) console.warn("[confirm] no se pudo agendar el evento:", calErr.message);
     } catch (e) {

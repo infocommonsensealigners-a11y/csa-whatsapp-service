@@ -3,13 +3,26 @@
  *  - GET  /health         → liveness básico.
  *  - GET  /status         → WaStatus completo (incluye QR dataURL si toca).
  *  - POST /session/reset  → borra data/auth y fuerza re-emparejamiento (QR nuevo).
+ *  - GET  /backup/status  → cuándo se respaldó wa.sqlite3 por última vez.
+ *  - POST /backup/run     → fuerza el backup AHORA (verificación/manual).
  */
 import type { FastifyInstance } from "fastify";
 import { aiQueuePending, getMeta, statusCounts } from "../../db/db";
 import { getMe, getQrDataUrl, getWaState, resetSession } from "../../wa/socket";
+import { runSidecarBackup } from "../../brain/backup";
+import { brainConfigured } from "../../brain/supabase";
 import type { WaStatus } from "../../../../shared/whatsapp-contracts";
 
 export function registerStatusRoutes(app: FastifyInstance): void {
+  // Backup de wa.sqlite3 (60k+ mensajes) — ver src/brain/backup.ts. Solo se
+  // llega aquí por el proxy del dashboard, que ya exige sesión.
+  app.get("/backup/status", async () => ({
+    ok: true,
+    enabled: brainConfigured(),
+    lastDay: getMeta("backup_last_day"),
+  }));
+  app.post("/backup/run", async () => runSidecarBackup(true));
+
   app.get("/health", async () => ({
     ok: true,
     db: true, // openDb() ya corrió en el bootstrap; si fallara, el proceso no llega aquí

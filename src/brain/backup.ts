@@ -16,7 +16,7 @@
  *  - GATED por SUPABASE_*, nunca lanza: un backup fallido jamás debe tumbar el
  *    sidecar (Fransua/chats/agenda siguen funcionando).
  */
-import { readFileSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, unlinkSync, existsSync, readdirSync, statSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import path from "node:path";
 import { config } from "../config";
@@ -68,7 +68,54 @@ export interface SidecarBackupResult {
   bytes?: number;
   bytesRaw?: number;
   path?: string;
+  /** Resultado del backup del EMPAREJAMIENTO (ver backupAuth). */
+  auth?: { ok: boolean; files?: number; bytes?: number; error?: string };
   error?: string;
+}
+
+/**
+ * Backup del EMPAREJAMIENTO de Baileys (`/data/auth`) — decisión del usuario
+ * 28-07-2026 ("sí, respáldalo también").
+ *
+ * POR QUÉ: Baileys es la ÚNICA vía por la que entran los mensajes (Coexistence
+ * está por integrar). Si el volumen se pierde y esta carpeta no está respaldada,
+ * WhatsApp queda desconectado hasta que alguien **escanee un QR con el móvil de
+ * Fran** — recuperable, pero requiere su presencia física. Con el backup, la
+ * recuperación es automática.
+ *
+ * ⚠️ SON CREDENCIALES de acceso a la cuenta de WhatsApp. Van al MISMO bucket
+ * privado que el resto (solo alcanzable con la secret key de Supabase, nunca
+ * público). Se guardan como un único JSON con todos los ficheros de la carpeta,
+ * comprimido. Riesgo asumido a cambio de disponibilidad — el usuario lo decidió
+ * conociendo el trade-off.
+ */
+async function backupAuth(day: string): Promise<NonNullable<SidecarBackupResult["auth"]>> {
+  try {
+    const dir = config.authDir;
+    if (!existsSync(dir)) return { ok: false, error: "no existe /data/auth" };
+    const bundle: Record<string, string> = {};
+    let files = 0;
+    for (const name of readdirSync(dir)) {
+      const p = path.join(dir, name);
+      try {
+        if (!statSync(p).isFile()) continue;
+        bundle[name] = readFileSync(p, "utf-8");
+        files++;
+      } catch {
+        /* un fichero ilegible no invalida el resto del emparejamiento */
+      }
+    }
+    if (files === 0) return { ok: false, error: "carpeta auth vacía (¿sin emparejar?)" };
+    const gz = gzipSync(JSON.stringify({ at: new Date().toISOString(), files, bundle }));
+    const { error } = await getSupabase().storage.from(BUCKET).upload(`${PREFIX}/${day}-auth.json.gz`, gz, {
+      contentType: "application/gzip",
+      upsert: true,
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, files, bytes: gz.length };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
 }
 
 /** Ejecuta el backup del SQLite. `force` ignora la marca diaria. Nunca lanza. */
@@ -93,10 +140,17 @@ export async function runSidecarBackup(force = false): Promise<SidecarBackupResu
     });
     if (error) throw new Error(error.message);
 
+    // Emparejamiento de Baileys (para no tener que re-escanear el QR).
+    const auth = await backupAuth(day);
+    if (!auth.ok) console.warn("[backup-sidecar] auth NO respaldada:", auth.error);
+
     setMeta(META_KEY, day);
     void pruneOld();
-    console.log(`[backup-sidecar] OK ${objPath} — ${(gz.length / 1048576).toFixed(1)} MB (de ${(raw.length / 1048576).toFixed(1)} MB)`);
-    return { ok: true, bytes: gz.length, bytesRaw: raw.length, path: objPath };
+    console.log(
+      `[backup-sidecar] OK ${objPath} — ${(gz.length / 1048576).toFixed(1)} MB (de ${(raw.length / 1048576).toFixed(1)} MB)` +
+        (auth.ok ? ` · auth: ${auth.files} ficheros` : " · auth: NO")
+    );
+    return { ok: true, bytes: gz.length, bytesRaw: raw.length, path: objPath, auth };
   } catch (e) {
     const error = (e as Error).message;
     console.warn("[backup-sidecar] falló:", error);

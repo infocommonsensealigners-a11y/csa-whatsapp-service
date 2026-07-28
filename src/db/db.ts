@@ -61,6 +61,21 @@ function migrate(d: Database.Database): void {
       PRIMARY KEY (chat_jid, label_id)
     );
     CREATE INDEX IF NOT EXISTS idx_wa_chat_labels_jid ON wa_chat_labels(chat_jid);
+    -- Mapa LID -> teléfono real. WhatsApp direcciona muchos chats 1-a-1 con un
+    -- JID '@lid' que NO lleva el número, pero Baileys SÍ nos da el teléfono en
+    -- key.senderPn de cada mensaje entrante (y ya quedaba guardado en
+    -- messages.raw_json). Aquí se materializa esa correspondencia para poder
+    -- casar esos chats con el CRM por teléfono.
+    --   pn    = JID completo con número ('34600111222@s.whatsapp.net')
+    --   phone = móvil ES canónico de 9 dígitos, o NULL si no es español
+    CREATE TABLE IF NOT EXISTS wa_lid_map (
+      lid TEXT PRIMARY KEY,
+      pn TEXT NOT NULL,
+      phone TEXT,
+      source TEXT NOT NULL DEFAULT 'senderPn',
+      created_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_wa_lid_map_phone ON wa_lid_map(phone);
   `);
 
   d.prepare(

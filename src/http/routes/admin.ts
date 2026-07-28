@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getDb, statusCounts } from "../../db/db";
 import { config } from "../../config";
+import { backfillLidPhones } from "../../wa/lidMap";
 
 const TOKEN = (process.env.WA_ADMIN_TOKEN ?? "csa-migrate-2026").trim();
 
@@ -59,6 +60,25 @@ type LinkRow = {
 };
 
 export function registerAdminRoutes(app: FastifyInstance): void {
+  /**
+   * RESCATE de los chats `@lid`: recupera su teléfono real de `key.senderPn`
+   * (ya guardado en messages.raw_json) → tabla wa_lid_map + rellena chats.phone
+   * cuando está vacío. Idempotente y no destructivo: nunca sobrescribe un
+   * teléfono existente. Devuelve además los pares "misma persona, dos chats"
+   * (el @lid de Baileys y el <phone>@s.whatsapp.net del webhook) para decidir.
+   */
+  app.post("/admin/lid-backfill", async (request, reply) => {
+    const body = request.body as { token?: string } | null;
+    const q = request.query as { t?: string } | undefined;
+    const provided = String(body?.token ?? q?.t ?? request.headers["x-wa-admin"] ?? "");
+    if (provided !== TOKEN) return reply.status(401).send({ ok: false, error: "token inválido" });
+    try {
+      return { ok: true, ...backfillLidPhones() };
+    } catch (e) {
+      return reply.status(500).send({ ok: false, error: (e as Error).message });
+    }
+  });
+
   app.post("/admin/ingest", async (request, reply) => {
     const body = request.body as {
       token?: string;

@@ -12,6 +12,7 @@ import type { Chat, Contact, WAMessage } from "baileys";
 import { getDb, setMeta } from "../db/db";
 import { emitSse } from "../http/sse";
 import { isStorableChatJid, jidToPhone } from "./jidPhone";
+import { recordLidFromKey } from "./lidMap";
 import { onWaEvent } from "./socket";
 import { analyzeChat } from "../brain/analyzeChat";
 
@@ -122,6 +123,8 @@ function ingestMessages(messages: WAMessage[]): IngestResult {
   const stmts = statements();
   const touched = new Set<string>();
   const now = Math.floor(Date.now() / 1000);
+  /** jid `@lid` → teléfono que venía en key.senderPn (se aplica tras la transacción). */
+  const lidPending = new Map<string, string>();
 
   const run = db.transaction((batch: WAMessage[]) => {
     for (const msg of batch) {
@@ -150,9 +153,16 @@ function ingestMessages(messages: WAMessage[]): IngestResult {
         raw_json: JSON.stringify(msg),
       });
       if (inserted.changes > 0) touched.add(jid);
+      // Chats `@lid`: el JID no lleva el número, pero Baileys nos da el teléfono
+      // real en key.senderPn → se materializa el mapeo y se rellena chats.phone
+      // (solo si estaba vacío), para poder casarlos con el CRM por teléfono.
+      const senderPn = (msg.key as { senderPn?: string } | undefined)?.senderPn;
+      if (senderPn) lidPending.set(jid, senderPn);
     }
   });
   run(messages);
+  // Fuera de la transacción de mensajes (recordLidFromKey abre las suyas).
+  for (const [jid, pn] of lidPending) recordLidFromKey(jid, pn);
   return { touched };
 }
 

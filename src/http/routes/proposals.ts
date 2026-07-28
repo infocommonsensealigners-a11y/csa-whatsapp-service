@@ -53,8 +53,34 @@ const SCHEMA_KEYS = [
   "giftDeadlineOverride", "planDescOverride", "fechasOverride", "confianza", "avisos",
 ] as const;
 
-function buildPrompt(transcript: string): string {
-  return `Eres el redactor de propuestas comerciales de Common Sense Aligners (CSA), programa de formación SBA (Sistema de Biomecánica Avanzada) para dentistas — impartido por el Dr. Javier Lozano. Fran es el comercial; acaba de tener una llamada de venta con un/a doctor/a y esta es su transcripción (Plaud). Tu trabajo es redactar el contenido PERSONALIZADO de la propuesta que se le enviará, con el MISMO tono y estructura que estos dos ejemplos reales (no los copies, son solo referencia de tono y longitud):
+
+/**
+ * Los dos programas que se venden en las llamadas. La propuesta de cada uno es
+ * DISTINTA (paleta, precios, regalo) y su discurso también: el SBA es multimarca
+ * y la Certificación es 100% Invisalign. Aquí solo va lo que cambia el TEXTO que
+ * redacta la IA; el resto (precios, enlaces, colores) lo pone el dashboard.
+ */
+type Programa = "sba" | "certificacion";
+
+const PROGRAMA_BRIEF: Record<Programa, string> = {
+  sba: `PROGRAMA: "Sistema de Biomecánica Avanzada" (SBA) — formación de CSA MULTIMARCA.
+- El programa NO se casa con ninguna marca de alineador: lo que comparten todas es la biomecánica. Si el doctor/a usa Invisalign, Spark, Smartee, Angel o alineadores propios, todo aplica igual.
+- Bloques: Teoría · Biomecánica mixta / Revisión de casos / Talleres de técnicas auxiliares / Estancia clínica.`,
+  certificacion: `PROGRAMA: "Certificación en Invisalign" — la certificación oficial de CSA, 100% INVISALIGN.
+- Enfoque EXCLUSIVO en Invisalign: NO es multimarca y NO se ofrecen alternativas de marca. Se parte de las bases de los brackets para empezar con los alineadores desde cero y llegar a un nivel muy avanzado de biomecánica; se habla de ClinCheck, ataches y protocolos de Invisalign. Tras el MARPE se CONTINÚA con alineadores Invisalign.
+- El Dr. Javier Lozano es SPEAKER de Invisalign: es un argumento de autoridad, úsalo si encaja.
+- Incluye CUENTA de Invisalign propia del doctor/a con 40% de descuento los 6 primeros meses (se puede activar más tarde, cuando tenga pacientes).
+- Bloques: Teoría · Biomecánica mixta / Revisión de casos / Talleres de técnicas auxiliares / Estancia clínica.
+- Es habitual que el lead sea alguien que ACABA la carrera o empieza: si aún no tiene pacientes, los 10 meses de revisión de casos se GUARDAN y se activan cuando entre en clínica (dilo así, es un argumento fuerte).
+- NUNCA menciones otras marcas de alineador como opción del programa.`,
+};
+
+function buildPrompt(transcript: string, programa: Programa): string {
+  return `Eres el redactor de propuestas comerciales de Common Sense Aligners (CSA), formación para dentistas impartida por el Dr. Javier Lozano. Fran es el comercial; acaba de tener una llamada de venta con un/a doctor/a y esta es su transcripción (Plaud). Tu trabajo es redactar el contenido PERSONALIZADO de la propuesta que se le enviará.
+
+${PROGRAMA_BRIEF[programa]}
+
+Escribe con el MISMO tono y estructura que estos dos ejemplos reales (no los copies, son solo referencia de tono y longitud):
 
 EJEMPLO 1 (Dr. Saúco) — hero: "Desde el máster de Manuel Román llevas años tratando solo con Invisalign y hoy apenas un 5–10% de tus casos se te atraviesan. Lo que buscas ahora es otra cosa: [reducir el número de refinamientos, bajar el número de alineadores por caso y tener más pacientes en tratamiento]." NEEDS incluye cosas como {want: «Quiero reducir el número de refinamientos.», tag: "Revisión de casos", fix: "Subes el caso... y el Dr. Lozano revisa contigo el detallado movimiento a movimiento..."}. REA incluye {t: "Las sesiones son martes y jueves a las 9:30:", d: "si no puedes entrar en directo, todas quedan grabadas..."}.
 
@@ -64,7 +90,7 @@ REGLAS (obligatorias):
 - "drNombre": SIEMPRE tratamiento + nombre (regla FIJA — nunca el nombre a secas). Formato "Dr. <Nombre>" o "Dra. <Nombre>" (p. ej. "Dr. Juan José Saúco", "Dra. Sete", "Dra. Irene Molinos"). Deduce el género del trato en la llamada (doctora/doctor, "la Dra."), del nombre si no se dice, y usa el nombre COMPLETO (nombre y apellido) si aparece; si solo hay nombre de pila, "Dra./Dr. <NombrePila>", pero NUNCA sin el "Dr./Dra." delante. "drNombreArt": lo mismo con artículo ("el Dr. Juan José Saúco" / "la Dra. Sete"), para el pie de página.
 - "heroLead1"/"heroLead2": 2 párrafos (HTML permitido). El 1º resume su situación actual y SU necesidad principal, con el tramo más importante envuelto en <span class="hl">...</span>. El 2º es puente hacia el programa, cerrando con dos puntos.
 - "needs": 4 a 6 puntos de dolor REALES de la llamada. "want" = una frase citada ENTRE COMILLAS ANGULARES «» lo más textual posible a como lo dijo el/la doctor/a (no la inventes; si no hay cita textual clara, parafrasea en primera persona). "tag" = etiqueta corta (2-4 palabras) del bloque/tema al que corresponde. "fix" = cómo se resuelve en el programa (con el Dr. Lozano), 1-3 frases.
-- "rea": 5 a 6 objeciones o dudas que salieron en la llamada (horario, marca de alineador que usa, nivel/experiencia previa, tiene clínica propia o colabora en varias, fechas/vacaciones, etc.), resueltas. "t" = titular en pocas palabras terminado en ":". "d" = resolución en 1-2 frases.
+- "rea": 5 a 7 objeciones o dudas que salieron en la llamada (horario, nivel/experiencia previa, tiene clínica propia o colabora en varias, si aún no tiene pacientes, fechas/vacaciones, dónde es la estancia, etc.), resueltas. "t" = titular en pocas palabras terminado en ":". "d" = resolución en 1-2 frases.
 - CONSISTENCIA: cualquier nombre propio que se repita (marca de alineador, técnica, nombre de persona, clínica...) debe escribirse EXACTAMENTE IGUAL cada vez que aparezca, tanto en "heroLead1"/"heroLead2" como en "needs"/"rea" — nunca dos grafías distintas del mismo dato en la misma propuesta. Si la transcripción (voz→texto de Plaud) lo transcribe de forma ambigua o dudosa (marca poco común, nombre extranjero), elige UNA sola grafía y úsala en todos los sitios, y genera un aviso de tipo "general" avisando de que ese nombre puede no estar bien transcrito.
 - "starBlock": cuál de estos 4 bloques FIJOS del programa es el dolor PRINCIPAL de este doctor/a — responde exactamente uno de: "biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (Estancia clínica — más casos/marketing/equipo).
 - "giftDeadlineOverride"/"planDescOverride"/"fechasOverride": antes de dejarlos en null, repasa TODA la transcripción buscando cualquier fecha, plazo o mes que el/la doctor/a o Fran mencionen (fecha límite de inscripción, inicio de curso, vacaciones, "para cuándo", pago aplazado, etc.) — si se menciona una fecha/plazo EXPLÍCITO distinto al habitual del programa, captúralo aquí en vez de dejarlo pasar; si hay una fecha mencionada pero no queda claro a qué corresponde exactamente, captúrala igualmente en "fechasOverride" y añade un aviso de campo "fechas" explicando la duda. Solo se queda todo en null si la llamada de verdad no menciona ninguna fecha. Nunca inventes precios ni IBAN.
@@ -175,8 +201,11 @@ function validateCleaned(obj: unknown): CleanedTranscript | null {
 export function registerProposalRoutes(app: FastifyInstance): void {
   // POST /proposals/extract { transcript } → borrador de contenido para la propuesta SBA.
   app.post("/proposals/extract", async (req, reply) => {
-    const body = (req.body ?? {}) as { transcript?: unknown };
+    const body = (req.body ?? {}) as { transcript?: unknown; programa?: unknown };
     const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
+    // Qué propuesta se está redactando; lo decide el dashboard por la carpeta de
+    // la llamada. Por defecto SBA (es el que existía antes de la Certificación).
+    const programa: Programa = body.programa === "certificacion" ? "certificacion" : "sba";
     if (!transcript) return reply.status(400).send({ ok: false, error: 'Falta "transcript".' });
     if (transcript.length < 200) {
       return reply.status(422).send({ ok: false, error: "La transcripción es demasiado corta para extraer una propuesta fiable." });
@@ -184,7 +213,7 @@ export function registerProposalRoutes(app: FastifyInstance): void {
     const clipped = transcript.length > MAX_TRANSCRIPT_CHARS ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) : transcript;
 
     try {
-      const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped), suggestModel);
+      const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped, programa), suggestModel);
       const proposal = raw ? validate(raw) : null;
       if (!proposal) return reply.status(503).send({ ok: false, error: "La IA no pudo extraer un borrador válido. Reintenta." });
       return { ok: true, proposal };

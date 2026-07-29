@@ -116,12 +116,18 @@ function statements() {
 interface IngestResult {
   /** JIDs con mensajes nuevos realmente insertados. */
   touched: Set<string>;
+  /** JIDs con contenido válido en el lote AUNQUE el mensaje ya existiera
+   *  (re-entregas de WhatsApp): el chat SÍ movió preview/last_message_at,
+   *  pero antes no se emitía ningún evento y la UI no se enteraba hasta el
+   *  poll de 45s (auditoría realtime 2026-07-29). */
+  seen: Set<string>;
 }
 
 function ingestMessages(messages: WAMessage[]): IngestResult {
   const db = getDb();
   const stmts = statements();
   const touched = new Set<string>();
+  const seen = new Set<string>();
   const now = Math.floor(Date.now() / 1000);
   /** jid `@lid` → teléfono que venía en key.senderPn (se aplica tras la transacción). */
   const lidPending = new Map<string, string>();
@@ -135,6 +141,7 @@ function ingestMessages(messages: WAMessage[]): IngestResult {
 
       const ts = tsOf(msg.messageTimestamp);
       const preview = previewOf(content);
+      seen.add(jid);
       stmts.upsertChat.run({
         jid,
         phone: jidToPhone(jid),
@@ -163,7 +170,7 @@ function ingestMessages(messages: WAMessage[]): IngestResult {
   run(messages);
   // Fuera de la transacción de mensajes (recordLidFromKey abre las suyas).
   for (const [jid, pn] of lidPending) recordLidFromKey(jid, pn);
-  return { touched };
+  return { touched, seen };
 }
 
 /** Crea filas de chat "vacías" a partir del listado del history-sync, aunque
@@ -269,12 +276,66 @@ export function registerIngest(): void {
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")
       );
       for (const jid of result.touched) emitSse({ type: "message.new", jid });
-      // Fransua EN DIRECTO: solo mensajes nuevos reales ("notify"), no el backfill.
+      // Re-entregas (mensaje ya existente): el chat movió preview/orden pero no
+      // hubo insert → avisa a la UI con chat.updated (refresca la lista, sin
+      // disparar el refetch de conversación). Solo en "notify" para no hacer
+      // ruido con lotes de sincronización.
       if (type === "notify") {
+        for (const jid of result.seen) {
+          if (!result.touched.has(jid)) emitSse({ type: "chat.updated", jid });
+        }
+        // Fransua EN DIRECTO: solo mensajes nuevos reales, no el backfill.
         for (const jid of result.touched) scheduleLiveAnalyze(jid);
       }
     } catch (err) {
       console.error("[ingest] error procesando upsert:", (err as Error).message);
+    }
+  });
+
+  // CONTENIDO QUE LLEGA TARDE (auditoría realtime 2026-07-29): ediciones de
+  // mensaje y cuerpos que WhatsApp entrega después del upsert original viajan
+  // por `messages.update` con `update.message`. Antes no había listener → ese
+  // contenido no se guardaba nunca (mensaje "que no llega" ni reabriendo).
+  // Actualiza el texto si la fila existe, la crea si no, y avisa a la UI.
+  onWaEvent("messages.update", (updates) => {
+    try {
+      const db = getDb();
+      const stmts = statements();
+      const updateContent = db.prepare(
+        `UPDATE messages SET type = @type, text = @text, raw_json = @raw_json WHERE chat_jid = @chat_jid AND id = @id`
+      );
+      const touched = new Set<string>();
+      for (const u of updates) {
+        const jid = u.key?.remoteJid;
+        const upd = u.update as { message?: WAMessage["message"] } | undefined;
+        if (!jid || !isStorableChatJid(jid) || !upd?.message) continue;
+        // Una EDICIÓN viene envuelta en protocolMessage.editedMessage y apunta
+        // al id del mensaje ORIGINAL; el contenido tardío normal viene directo.
+        const proto = upd.message.protocolMessage;
+        const body = proto?.editedMessage ?? upd.message;
+        const targetId = proto?.key?.id ?? u.key?.id;
+        if (!targetId) continue;
+        const content = extractContent({ key: u.key, message: body } as WAMessage);
+        if (!content) continue;
+        const now = Math.floor(Date.now() / 1000);
+        const raw = JSON.stringify({ key: u.key, message: body });
+        const updated = updateContent.run({ type: content.type, text: content.text, raw_json: raw, chat_jid: jid, id: targetId });
+        if (updated.changes === 0) {
+          // No estaba (p.ej. el original nunca se pudo descifrar): créala.
+          stmts.upsertChat.run({
+            jid, phone: jidToPhone(jid), display_name: "",
+            last_message_at: now, last_message_preview: previewOf(content), now,
+          });
+          stmts.upsertMessage.run({
+            chat_jid: jid, id: targetId, from_me: u.key?.fromMe ? 1 : 0,
+            ts: now, type: content.type, text: content.text, raw_json: raw,
+          });
+        }
+        touched.add(jid);
+      }
+      for (const jid of touched) emitSse({ type: "message.new", jid });
+    } catch (err) {
+      console.error("[ingest] error procesando messages.update:", (err as Error).message);
     }
   });
 

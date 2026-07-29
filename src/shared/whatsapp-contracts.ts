@@ -124,6 +124,7 @@ export interface AiJobStatus {
 /* --------------------------------- SSE ----------------------------------- */
 
 export type WaSseEvent =
+  | { type: "ping" } // latido visible cada 25s — el cliente reconecta si deja de llegar
   | { type: "connection"; state: WaConnectionState }
   | { type: "message.new"; jid: string }
   | { type: "chat.updated"; jid: string }

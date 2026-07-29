@@ -14,7 +14,20 @@ export function addSseClient(res: ServerResponse): void {
   clients.add(res);
   if (!heartbeat) {
     heartbeat = setInterval(() => {
-      for (const c of clients) c.write(": hb\n\n");
+      // Latido como EVENTO DE DATOS, no como comentario (auditoría realtime
+      // 2026-07-29): los comentarios ": hb" son invisibles para EventSource
+      // (no disparan onmessage) → el cliente no podía distinguir "canal vivo
+      // sin novedades" de "conexión medio muerta". Con un ping visible, el
+      // watchdog del dashboard reconecta si deja de recibirlo. write() con
+      // try/catch: un cliente zombi no debe tumbar el latido de los demás.
+      const frame = `data: {"type":"ping"}\n\n`;
+      for (const c of clients) {
+        try {
+          c.write(frame);
+        } catch {
+          clients.delete(c);
+        }
+      }
     }, 25_000);
     heartbeat.unref();
   }

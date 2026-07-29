@@ -20,6 +20,7 @@ import path from "node:path";
 import { getDb, statusCounts } from "../../db/db";
 import { config } from "../../config";
 import { backfillLidPhones, resolvePhonesToLids } from "../../wa/lidMap";
+import { emitSse } from "../sse";
 
 const TOKEN = (process.env.WA_ADMIN_TOKEN ?? "csa-migrate-2026").trim();
 
@@ -334,6 +335,17 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       run();
     } catch (e) {
       return reply.status(500).send({ ok: false, error: (e as Error).message });
+    }
+
+    // Avisa a la UI (auditoría realtime 2026-07-29): esta ruta también la usa
+    // el webhook de Coexistence para ingerir mensajes en vivo — sin evento, lo
+    // ingerido no aparecía hasta el poll de 45s. message.new por chat con
+    // mensajes insertados (refresca también la conversación abierta si toca).
+    if (im > 0) {
+      const jids = new Set((body?.messages ?? []).map((m) => m.chat_jid));
+      for (const jid of jids) emitSse({ type: "message.new", jid });
+    } else if (ic > 0) {
+      emitSse({ type: "chats.synced" });
     }
 
     return { ok: true, inserted: { chats: ic, messages: im, links: il }, counts: statusCounts() };

@@ -63,6 +63,37 @@ function canon(raw: unknown): string | null {
   return /^[6789]\d{8}$/.test(x) ? x : null;
 }
 
+/**
+ * Clave de teléfono para EMPAREJAR, española o INTERNACIONAL (auditoría
+ * 2026-07-29). `canon()` solo acepta móviles ES, así que los leads extranjeros
+ * (Argentina, Francia, Chile, Perú… 173 en el Sheet) y sus conversaciones NUNCA
+ * podían casar por teléfono: se quedaban sin ficha para Fransua aunque el número
+ * estuviera completo en los dos lados. Aquí: si es ES → los 9 dígitos de
+ * siempre (no cambia nada de lo que ya funciona); si no → el número COMPLETO
+ * con prefijo de país, y el match exige igualdad exacta (misma longitud y mismo
+ * prefijo), que es tan fuerte como el ES y no puede confundir dos países.
+ */
+function phoneKey(raw: unknown): string | null {
+  const es = canon(raw);
+  if (es) return es;
+  let d = String(raw ?? "").replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  return d.length >= 10 && d.length <= 15 ? d : null;
+}
+
+/**
+ * Clave de un CHAT: su `phone` cuando lo tiene y, si no, el número del propio
+ * JID — los chats internacionales llevan el número en el jid pero `chats.phone`
+ * queda NULL (jidToPhone solo canoniza ES). Los `@lid` no llevan número: esos
+ * siguen resolviéndose por nombre.
+ */
+function chatPhoneKey(c: { jid: string; phone: string | null }): string | null {
+  const fromPhone = phoneKey(c.phone);
+  if (fromPhone) return fromPhone;
+  if (c.jid.endsWith("@lid")) return null;
+  return phoneKey(c.jid.split("@")[0].split(":")[0]);
+}
+
 /** Nombre normalizado para comparar: sin acentos/mayúsculas/emoji/puntuación, espacios colapsados. */
 function normName(raw: unknown): string {
   return String(raw ?? "")
@@ -90,11 +121,14 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
   // Índice teléfono → leads (un teléfono puede repetirse en varias filas).
   const byPhone = new Map<string, { sourceRow: number; name: string; estado: string | null }[]>();
   const dirRows: { sourceRow: number; phone: string; name: string; estado: string | null }[] = [];
+  /** sourceRow → su clave de teléfono (para saber si un lead YA tiene conversación propia). */
+  const leadPhoneKey = new Map<number, string>();
   for (const l of leads) {
-    const phone = canon(l.telefono);
+    const phone = phoneKey(l.telefono);
     if (!phone) continue;
     const name = (l.nombre ?? "").trim();
     const estado = l.estado?.canonical ?? null;
+    leadPhoneKey.set(l.sourceRow, phone);
     dirRows.push({ sourceRow: l.sourceRow, phone, name, estado });
     const arr = byPhone.get(phone) ?? [];
     arr.push({ sourceRow: l.sourceRow, name, estado });
@@ -157,6 +191,19 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
     display_name: string | null;
   }[];
 
+  /** Teléfonos que TIENEN conversación. Un lead cuyo número está aquí ya tiene
+   *  la suya, así que NUNCA se le cuelga otra por nombre (ver linkByName). */
+  const chatKeys = new Set<string>();
+  for (const c of chats) {
+    const k = chatPhoneKey(c);
+    if (k) chatKeys.add(k);
+  }
+  /** ¿Este lead ya tiene su propia conversación, casada por teléfono? */
+  const yaTieneConversacion = (sourceRow: number): boolean => {
+    const k = leadPhoneKey.get(sourceRow);
+    return !!k && chatKeys.has(k);
+  };
+
   let dirCount = 0,
     linkCount = 0,
     chatsLinked = 0,
@@ -174,28 +221,20 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
       upDir.run({ ...d, now });
       dirCount++;
     }
-    for (const c of chats) {
-      if (c.phone) {
-        const matches = byPhone.get(c.phone) ?? [];
-        if (matches.length === 0) {
-          chatsNoLead++;
-          noMatch.push({ jid: c.jid, display_name: c.display_name, phone: c.phone });
-          continue;
-        }
-        if (matches.length > 1) chatsMulti++;
-        chatsLinked++;
-        for (const m of matches) {
-          upLink.run({ jid: c.jid, sourceRow: m.sourceRow, phone: c.phone, name: m.name, now });
-          wanted.add(`${c.jid}|${m.sourceRow}`);
-          linkCount++;
-        }
-        continue;
-      }
+    /**
+     * Vía NOMBRE (para chats sin teléfono, y como RESCATE de los que tienen un
+     * teléfono que no está en el Sheet — auditoría 2026-07-29). Regla de
+     * seguridad: solo se cuelga por nombre a un lead que NO tenga ya su propia
+     * conversación casada por teléfono. Así nunca se le mete a alguien la
+     * conversación de un homónimo (medido: excluye correctamente los 4 casos
+     * "Javi/Esther/Mónica/Marisol", donde el lead ya tenía la suya).
+     */
+    const linkByName = (c: { jid: string; phone: string | null; display_name: string | null }): boolean => {
       const matches = matchByName(c.display_name);
       if (matches.length === 0) {
         chatsNoLeadByName++;
-        noMatch.push({ jid: c.jid, display_name: c.display_name, phone: null });
-        continue;
+        noMatch.push({ jid: c.jid, display_name: c.display_name, phone: c.phone });
+        return false;
       }
       if (matches.length > 1) {
         chatsAmbiguousByName++;
@@ -204,13 +243,48 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
           display_name: c.display_name,
           candidatos: matches.map((m) => `${m.name} (fila ${m.sourceRow})`),
         });
-        continue;
+        return false;
+      }
+      const m = matches[0];
+      if (yaTieneConversacion(m.sourceRow)) {
+        // Ese lead ya tiene su conversación: este chat es de otra persona con
+        // el mismo nombre (o un segundo número). A revisión manual, no a ciegas.
+        chatsAmbiguousByName++;
+        ambiguous.push({
+          jid: c.jid,
+          display_name: c.display_name,
+          candidatos: [`${m.name} (fila ${m.sourceRow}) — ya tiene otra conversación por teléfono`],
+        });
+        return false;
       }
       chatsLinkedByName++;
-      const m = matches[0];
-      upLink.run({ jid: c.jid, sourceRow: m.sourceRow, phone: null, name: m.name, now });
+      upLink.run({ jid: c.jid, sourceRow: m.sourceRow, phone: c.phone, name: m.name, now });
       wanted.add(`${c.jid}|${m.sourceRow}`);
       linkCount++;
+      return true;
+    };
+
+    for (const c of chats) {
+      // Clave del chat: su phone, o el número del propio jid si es internacional.
+      const key = chatPhoneKey(c);
+      if (key) {
+        const matches = byPhone.get(key) ?? [];
+        if (matches.length > 0) {
+          if (matches.length > 1) chatsMulti++;
+          chatsLinked++;
+          for (const m of matches) {
+            upLink.run({ jid: c.jid, sourceRow: m.sourceRow, phone: key, name: m.name, now });
+            wanted.add(`${c.jid}|${m.sourceRow}`);
+            linkCount++;
+          }
+          continue;
+        }
+        // Tiene número pero NO está en el Sheet: antes se abandonaba aquí. Puede
+        // ser que el CRM lo tenga mal escrito o vacío → se intenta por nombre.
+        if (!linkByName(c)) chatsNoLead++;
+        continue;
+      }
+      linkByName(c);
     }
     let removed = 0;
     for (const l of staleLinks.all() as { chat_jid: string; source_row: number }[]) {

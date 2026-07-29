@@ -100,9 +100,18 @@ function normName(raw: unknown): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "") // acentos (tras NFD, marcas combinantes)
     .replace(/[^\p{L}\s'-]/gu, "") // emoji, puntuación, dígitos
+    .toLowerCase()
+    // ETIQUETAS DE CAMPAÑA que Fran escribe DENTRO del nombre del contacto
+    // ("Ana Isabel PEI", "Miriam Lead SBA", "Layla Acosta PEI V", "Dra
+    // Alejandra Castillo") y que a veces están también en el Sheet. Sin
+    // quitarlas el nombre NUNCA casa y la persona se queda sin ficha aunque
+    // esté dada de alta — medido 2026-07-29: le pasaba incluso a leads en
+    // estado "Compra". Se limpian en AMBOS lados porque normName se aplica
+    // igual al nombre de WhatsApp y al del Sheet.
+    .replace(/\b(leads?|cliente|sba|obc|pei|cert|certificacion|certificaion|invisalign|align|manychat|sas|estancia|formulario|dr|dra|sr|sra)\b/g, " ")
+    .replace(/\b(i{1,3}|iv|vi{0,3})\b/g, " ") // nº de edición en romano
     .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase();
+    .replace(/\s+/g, " ");
 }
 
 interface NameCandidate {

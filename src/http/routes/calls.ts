@@ -146,8 +146,15 @@ REGLAS de salida:
 - "pidioCierre": true/false/null — ¿pidió explícitamente el siguiente paso/cierre?
 - "proximoPaso": el compromiso concreto que quedó (con fecha si la hay), o null si la llamada quedó en el aire.
 - "sentimentLead": uno de "entusiasmo", "interes", "escepticismo", "rechazo", "neutro".
-- "scores": objeto {cualificacion, argumentacion, objeciones, cierre, rapport}, cada uno 0-100, según lo bien que Fran ejecutó ESA dimensión.
-- "scoreGlobal": 0-100, valoración global de la llamada.
+- "scores": objeto {cualificacion, argumentacion, objeciones, cierre, rapport}, cada uno 0-100. NO puntúes "a ojo": usa el BAREMO de abajo y elige el tramo cuya conducta describa lo que pasó de verdad.
+- "scoreGlobal": 0-100, valoración global. Debe quedar cerca de la media de las cinco dimensiones (±10): si te sale muy lejos, revisa las dimensiones.
+
+BAREMO por conducta (elige el tramo que describa lo que pasó; interpola entre tramos). Es EL MISMO con el que Fran se autoevalúa en el dashboard y las dos notas se comparan lado a lado: cíñete a los tramos, no puntúes a ojo.
+- CUALIFICACIÓN · 0 no preguntó, fue a contar el programa | 25 solo lo básico (qué sistema usa) | 50 sabe su situación y algún problema, no lo que le CUESTA | 75 situación + 2-3 problemas y su coste (casos que deriva, tiempo, dinero) | 100 + confirmó que DECIDE y le hizo verbalizar el coste de seguir igual.
+- ARGUMENTACIÓN · 0 recitó el programa entero | 25 ventajas generales | 50 enlazó un par con su situación | 75 cada bloque respondía a un problema que él/ella contó | 100 + caso/testimonio parecido y le hizo proyectarse en un paciente suyo.
+- OBJECIONES · 0 ninguna salió o las cortó | 25 las rebatió rápido para avanzar | 50 escuchó y contestó, sin comprobar si quedó conforme | 75 entendió la de fondo, la resolvió con datos/casos y VERIFICÓ el cierre | 100 + destapó la que no decía.
+- CIERRE = AVANCE (no técnicas de presión, que en esta venta restan) · 0 nada ("te lo piensas") | 25 él volverá a llamar, sin fecha | 50 paso difuso ("esta semana") | 75 pidió el paso con DÍA Y HORA | 100 + cita por elección (2 franjas) y decisión encaminada.
+- RAPPORT = ESCUCHA · 0 habló Fran casi todo | 25 ~dos tercios | 50 mitad y mitad | 75 habló más el doctor/a, le dejó terminar y recogió lo dicho | 100 + se abrió sin que le preguntaran. Referencia real: quien convierte habla ~46% del tiempo y por encima del 65% la conversión cae; si "talkRatioComercial" es null, puntúa por señales de escucha sin castigar la falta de dato.
 - "fortalezas"/"debilidades": arrays de {texto (qué hizo bien / qué falló, 1 frase), cita (evidencia textual «…» o null)}. 2 a 4 de cada, las más relevantes.
 - "recomendaciones": 1 a 3 acciones concretas para que Fran mejore la PRÓXIMA llamada de este tipo.
 - "confianza": "alta" si la transcripción da material claro; "media" si falta contexto; "baja" si es pobre/corta o no se distingue bien la conversación.
@@ -244,6 +251,25 @@ function validate(obj: unknown): CallAnalysis | null {
   };
 }
 
+/**
+ * Evalúa una transcripción con el baremo y devuelve el análisis validado (o null
+ * si la IA no dio un JSON usable).
+ *
+ * Está fuera de la ruta a propósito: así se puede probar el BAREMO contra una
+ * transcripción real sin levantar el servidor ni pasar por HTTP
+ * (`npx tsx --env-file=.env scripts/diag-rubric.ts <fichero.txt>`), que es como
+ * se comprobó el efecto del cambio de rubric antes de desplegarlo.
+ */
+export async function analyzeCallTranscript(
+  transcript: string,
+  programa: ProgramaKey | null = null,
+  calibraciones: CalibracionHint[] = [],
+): Promise<CallAnalysis | null> {
+  const clipped = transcript.length > MAX_TRANSCRIPT_CHARS ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) : transcript;
+  const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped, calibraciones, programa), suggestModel);
+  return raw ? validate(raw) : null;
+}
+
 export function registerCallRoutes(app: FastifyInstance): void {
   // POST /calls/analyze { transcript } → evaluación de rendimiento de la llamada.
   app.post("/calls/analyze", async (req, reply) => {
@@ -254,10 +280,8 @@ export function registerCallRoutes(app: FastifyInstance): void {
       return reply.status(422).send({ ok: false, error: "La transcripción es demasiado corta para analizar la llamada con rigor." });
     }
     const calibraciones: CalibracionHint[] = Array.isArray(body.calibraciones) ? (body.calibraciones as CalibracionHint[]) : [];
-    const clipped = transcript.length > MAX_TRANSCRIPT_CHARS ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) : transcript;
     try {
-      const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped, calibraciones, normPrograma(body.programa)), suggestModel);
-      const analysis = raw ? validate(raw) : null;
+      const analysis = await analyzeCallTranscript(transcript, normPrograma(body.programa), calibraciones);
       if (!analysis) return reply.status(503).send({ ok: false, error: "La IA no pudo analizar la llamada. Reintenta." });
       return { ok: true, analysis };
     } catch (e) {

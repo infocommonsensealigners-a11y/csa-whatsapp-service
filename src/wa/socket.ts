@@ -97,6 +97,15 @@ export function onWaEvent<K extends keyof BaileysEventMap>(
   if (sock) sock.ev.on(event, handler);
 }
 
+/**
+ * Socket activo, SOLO para el módulo de envío manual (src/wa/send.ts — el único
+ * fichero donde el guardián check:nosend permite la API de publicación).
+ * Devuelve null si no hay conexión abierta.
+ */
+export function getActiveSocket(): WASocket | null {
+  return state === "open" ? sock : null;
+}
+
 /** URL de la foto de perfil de un JID, o null (sin foto / oculta / sin conexión). */
 export async function fetchProfilePicture(jid: string): Promise<string | null> {
   if (!sock || state !== "open") return null;

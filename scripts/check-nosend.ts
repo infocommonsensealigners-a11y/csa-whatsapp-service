@@ -1,8 +1,15 @@
 /**
- * Guardián anti-envío: recorre TODO src/ y falla si aparece cualquier token
- * de la superficie de publicación de Baileys. Es la garantía mecánica de que
- * este servicio es de solo lectura: ni código ni comentarios pueden nombrar
- * estas APIs (así un futuro refactor no las cuela "solo para probar").
+ * Guardián del envío: recorre TODO src/ y falla si aparece cualquier token de
+ * la superficie de publicación de Baileys FUERA del único módulo autorizado.
+ *
+ * HISTORIA: hasta el 29-07-2026 este servicio era 100% solo-lectura y ningún
+ * fichero podía nombrar estas APIs. Ese día el usuario decidió poder RESPONDER
+ * a mano desde el teléfono flotante del dashboard. La garantía mecánica no se
+ * borra, se ACOTA: `sendMessage` solo puede existir en `src/wa/send.ts` (envío
+ * manual, auditado y con límite de ritmo). Todo lo demás — incluido TODO el
+ * cerebro de Fransua (src/ai/, src/brain/) — sigue sin poder ni nombrarlo: el
+ * agente puede SUGERIR texto, jamás enviarlo. El resto de tokens (receipts,
+ * presencia, chatModify) siguen prohibidos en TODAS partes: no los usamos.
  *
  * Ejecutar: npm run check:nosend  (parte de la verificación de cada fase).
  */
@@ -17,6 +24,10 @@ const FORBIDDEN_TOKENS = [
   "chatModify",
   "sendPresenceUpdate",
 ] as const;
+
+/** Único fichero donde se permite el token de envío de texto (y SOLO ese token). */
+const SEND_ALLOWLIST = new Set(["src/wa/send.ts".replace(/\//g, path.sep)]);
+const SEND_TOKEN = "sendMessage";
 
 const SRC_DIR = path.resolve(process.cwd(), "src");
 
@@ -38,17 +49,20 @@ function* walk(dir: string): Generator<string> {
 const violations: Violation[] = [];
 
 for (const file of walk(SRC_DIR)) {
+  const rel = path.relative(process.cwd(), file);
+  const esModuloDeEnvio = SEND_ALLOWLIST.has(rel);
   const lines = fs.readFileSync(file, "utf-8").split(/\r?\n/);
   lines.forEach((text, i) => {
     for (const token of FORBIDDEN_TOKENS) {
-      if (text.includes(token)) {
-        violations.push({
-          file: path.relative(process.cwd(), file),
-          line: i + 1,
-          token,
-          snippet: text.trim().slice(0, 120),
-        });
-      }
+      if (!text.includes(token)) continue;
+      // La ÚNICA excepción: el token de envío de texto, en el módulo de envío.
+      if (esModuloDeEnvio && token === SEND_TOKEN) continue;
+      violations.push({
+        file: rel,
+        line: i + 1,
+        token,
+        snippet: text.trim().slice(0, 120),
+      });
     }
   });
 }
@@ -61,4 +75,7 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log("✓ check:nosend OK — src/ no contiene ninguna API de publicación de WhatsApp.");
+console.log(
+  "✓ check:nosend OK — la publicación de WhatsApp solo existe en src/wa/send.ts (envío manual); " +
+    "el resto de src/ (incluido Fransua) no puede ni nombrarla."
+);

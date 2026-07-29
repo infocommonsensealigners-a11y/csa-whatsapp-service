@@ -39,6 +39,27 @@ protegido con firma (`WA_APP_SECRET` + `WA_APP_SECRET_ENFORCE=true`, ver
 `../dashboard/DOCS/SECRETOS-META-GUIA.md`) — la transición no requiere apagar
 Baileys de golpe.
 
+## ✍️ ENVÍO MANUAL: permitido SOLO en `src/wa/send.ts` (decisión del usuario, 29-07-2026)
+
+Este servicio dejó de ser 100% solo-lectura: desde el **teléfono flotante** del
+dashboard se puede **RESPONDER**. La garantía no se borró, se **acotó**:
+
+- `npm run check:nosend` sigue siendo obligatorio y falla si `sendMessage`
+  aparece en **cualquier fichero de `src/` que no sea `src/wa/send.ts`**. El resto
+  de tokens (`relayMessage`, `sendReceipt`, `readMessages`, `chatModify`,
+  `sendPresenceUpdate`) siguen **prohibidos en TODAS partes**.
+- **Fransua NO puede enviar.** Todo `src/ai/` y `src/brain/` tiene vetado el
+  token: el agente puede *sugerir* texto, pero la única salida es la ruta
+  `POST /chats/:jid/send`, que llama una persona desde la interfaz.
+- Salvaguardas en `send.ts`: solo texto (1..4096), solo chats 1-a-1 **ya
+  existentes** (no inicia conversaciones frías), ritmo mínimo 1,5 s entre envíos
+  y tope de 30 por 5 min, y **auditoría** en `wa_send_audit` (actor, chat,
+  longitud, cuándo).
+
+⚠️ Si alguna vez hay que automatizar respuestas, **NO se hace ampliando esta
+allowlist**: es una decisión de producto y de riesgo de cuenta que debe tomar el
+usuario explícitamente.
+
 ## Datos que no se tocan a la ligera
 - El volumen `/data` PERSISTE entre deploys (verificado); las "pérdidas" históricas
   fueron crashes por repo mal conectado, no borrados.

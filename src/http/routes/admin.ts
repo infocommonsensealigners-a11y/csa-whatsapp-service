@@ -109,6 +109,147 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     }
   });
 
+  /**
+   * FUSIÓN de chats gemelos @lid (auditoría 2026-07-28 → decisión del usuario
+   * 2026-07-29: "hazlo ahora"). `backfillLidPhones().duplicados` ya detecta los
+   * pares "misma persona, dos chats" (el @lid de Baileys y el
+   * <phone>@s.whatsapp.net) pero antes solo los REPORTABA — fusionar el
+   * historial es destructivo, así que quedó para una decisión explícita.
+   *
+   * Por cada par: se elige CANÓNICO el chat con `last_message_at` más reciente
+   * (donde Fran ha estado escribiendo de verdad); los mensajes del otro se
+   * MUEVEN (nunca se copian ni se pierden — `INSERT OR IGNORE` + `DELETE`,
+   * dedupe por `id` de Baileys) y sus vínculos de lead (`chat_lead_links`) y
+   * etiquetas se re-apuntan al canónico sin duplicar. El perdedor NO se borra:
+   * queda con `ignored=1` y sin `last_message_at` (desaparece de las listas,
+   * pero la fila sigue ahí por si hace falta auditar).
+   *
+   * `dryRun` (por defecto true): calcula y devuelve el plan SIN escribir nada.
+   * Solo con `{"dryRun":false}` explícito se ejecuta la fusión, y TODO el lote
+   * va en una única transacción (si algo falla, no se toca nada).
+   */
+  app.post("/admin/merge-lid-chats", async (request, reply) => {
+    const body = request.body as { token?: string; dryRun?: boolean } | null;
+    const q = request.query as { t?: string } | undefined;
+    const provided = String(body?.token ?? q?.t ?? request.headers["x-wa-admin"] ?? "");
+    if (provided !== TOKEN) return reply.status(401).send({ ok: false, error: "token inválido" });
+    const dryRun = body?.dryRun !== false;
+    try {
+      const { duplicados } = backfillLidPhones();
+      const db = getDb();
+      type ChatFull = {
+        jid: string; phone: string | null; display_name: string | null;
+        avatar_path: string | null; avatar_fetched_at: number | null;
+        last_message_at: number | null; last_message_preview: string | null;
+        last_opened_at: number | null; ignored: number;
+      };
+      const getChat = (jid: string): ChatFull | undefined =>
+        db.prepare("SELECT * FROM chats WHERE jid = ?").get(jid) as ChatFull | undefined;
+
+      const plan = duplicados.map((d) => {
+        const a = getChat(d.lid);
+        const b = getChat(d.pn);
+        if (!a || !b) return null;
+        const [canonical, loser] = (a.last_message_at ?? 0) >= (b.last_message_at ?? 0) ? [a, b] : [b, a];
+        const mensajesAMover = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE chat_jid = ?").get(loser.jid) as { n: number }).n;
+        const linksAMover = (db.prepare("SELECT COUNT(*) AS n FROM chat_lead_links WHERE chat_jid = ? AND status = 'active'").get(loser.jid) as { n: number }).n;
+        return { lid: d.lid, pn: d.pn, phone: d.phone, canonical: canonical.jid, loser: loser.jid, mensajesAMover, linksAMover };
+      }).filter((p): p is NonNullable<typeof p> => p !== null);
+
+      if (dryRun) {
+        return {
+          ok: true, dryRun: true, pares: plan.length,
+          totalMensajes: plan.reduce((s, p) => s + p.mensajesAMover, 0),
+          plan,
+        };
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      const resultados: Array<{ canonical: string; loser: string; mensajesMovidos: number; linksActualizados: number; tagsActualizados: number }> = [];
+      const tx = db.transaction(() => {
+        for (const p of plan) {
+          const canonical = getChat(p.canonical)!;
+          const loser = getChat(p.loser)!;
+
+          // 1) Mensajes: mover, deduplicando por id de Baileys (PK compuesta).
+          const antes = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE chat_jid = ?").get(canonical.jid) as { n: number }).n;
+          db.prepare(
+            `INSERT OR IGNORE INTO messages (chat_jid, id, from_me, ts, type, text, media_path, media_mime, raw_json)
+             SELECT ?, id, from_me, ts, type, text, media_path, media_mime, raw_json FROM messages WHERE chat_jid = ?`
+          ).run(canonical.jid, loser.jid);
+          db.prepare("DELETE FROM messages WHERE chat_jid = ?").run(loser.jid);
+          const despues = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE chat_jid = ?").get(canonical.jid) as { n: number }).n;
+
+          // 2) Metadatos del chat canónico: lo mejor de los dos.
+          const masReciente = (loser.last_message_at ?? 0) > (canonical.last_message_at ?? 0) ? loser : canonical;
+          db.prepare(
+            `UPDATE chats SET
+               phone = COALESCE(phone, ?),
+               display_name = COALESCE(display_name, ?),
+               avatar_path = COALESCE(avatar_path, ?),
+               avatar_fetched_at = COALESCE(avatar_fetched_at, ?),
+               last_message_at = ?,
+               last_message_preview = ?,
+               updated_at = ?
+             WHERE jid = ?`
+          ).run(
+            loser.phone, loser.display_name, loser.avatar_path, loser.avatar_fetched_at,
+            masReciente.last_message_at, masReciente.last_message_preview, now, canonical.jid
+          );
+
+          // 3) chat_lead_links activos del perdedor: re-apuntar si el canónico
+          // no tiene ya ese mismo link activo (evita violar el UNIQUE).
+          const links = db.prepare("SELECT * FROM chat_lead_links WHERE chat_jid = ? AND status = 'active'").all(loser.jid) as Array<{
+            id: number; source_row: number; phone_snapshot: string | null; lead_name_snapshot: string | null; method: string;
+          }>;
+          let linksActualizados = 0;
+          for (const link of links) {
+            const yaExiste = db
+              .prepare("SELECT 1 FROM chat_lead_links WHERE chat_jid = ? AND source_row = ? AND status = 'active'")
+              .get(canonical.jid, link.source_row);
+            if (!yaExiste) {
+              db.prepare(
+                `INSERT INTO chat_lead_links (chat_jid, source_row, phone_snapshot, lead_name_snapshot, method, status, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`
+              ).run(canonical.jid, link.source_row, link.phone_snapshot, link.lead_name_snapshot, link.method, now, now);
+              linksActualizados++;
+            }
+            db.prepare("UPDATE chat_lead_links SET status = 'removed', updated_at = ? WHERE id = ?").run(now, link.id);
+          }
+
+          // 4) Etiquetas del perdedor: re-apuntar si el canónico no la tiene ya.
+          const tags = db.prepare("SELECT * FROM chat_tags WHERE chat_jid = ?").all(loser.jid) as Array<{
+            tag_id: number; source: string; status: string; confidence: number | null;
+          }>;
+          let tagsActualizados = 0;
+          for (const t of tags) {
+            const yaExiste = db.prepare("SELECT 1 FROM chat_tags WHERE chat_jid = ? AND tag_id = ?").get(canonical.jid, t.tag_id);
+            if (!yaExiste) {
+              db.prepare(
+                "INSERT INTO chat_tags (chat_jid, tag_id, source, status, confidence) VALUES (?, ?, ?, ?, ?)"
+              ).run(canonical.jid, t.tag_id, t.source, t.status, t.confidence);
+              tagsActualizados++;
+            }
+          }
+          db.prepare("DELETE FROM chat_tags WHERE chat_jid = ?").run(loser.jid);
+
+          // 5) El perdedor NO se borra: se apaga (ignored=1, sin last_message_at)
+          // para que desaparezca de las listas activas sin perder la fila.
+          db.prepare(
+            "UPDATE chats SET ignored = 1, last_message_at = NULL, last_message_preview = NULL, updated_at = ? WHERE jid = ?"
+          ).run(now, loser.jid);
+
+          resultados.push({ canonical: canonical.jid, loser: loser.jid, mensajesMovidos: despues - antes, linksActualizados, tagsActualizados });
+        }
+      });
+      tx();
+
+      return { ok: true, dryRun: false, pares: resultados.length, resultados };
+    } catch (e) {
+      return reply.status(500).send({ ok: false, error: (e as Error).message });
+    }
+  });
+
   app.post("/admin/ingest", async (request, reply) => {
     const body = request.body as {
       token?: string;

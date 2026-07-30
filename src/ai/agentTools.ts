@@ -200,6 +200,76 @@ const REACTIVABLES = new Set(["caliente", "templado"]);
  * chat_intel (Supabase). "de 2025" = su última conversación cae en 2025 (=
  * dormido desde 2025); se explicita para no inducir a error.
  */
+/**
+ * LEADS DEL CRM por estado del embudo / temperatura / recencia (ultra-
+ * omnipresencia 2026-07-30): la carencia nº1 medida en la batería de 100
+ * preguntas — "ábreme los de Propuesta enviada", "los calientes del pipeline",
+ * "los que escribieron esta semana" — era imposible: buscar_leads solo ve el
+ * TEXTO de las conversaciones. Cruza `lead_directory` (estado EXACTO del Sheet,
+ * sincronizado cada 20 min por el matching) con `chat_intel` (temperatura y
+ * último mensaje) por sourceRow/teléfono.
+ */
+const leadsDelCrm = tool(
+  "leads_del_crm",
+  "Filtra los leads del CRM por ESTADO del embudo (Sin contactar, Contactado, En conversación, Propuesta enviada, Futuro, Compra, No cualifica), por TEMPERATURA de la conversación (caliente/templado/frio) y/o por RECENCIA (silencio_max_dias = solo los que escribieron hace ≤N días). Devuelve nombre, fila (sourceRow), teléfono, estado y temperatura — justo lo que necesitas para abrir una vista del CRM con [[VISTA_CRM]]. Combina filtros libremente.",
+  {
+    estado: z.string().optional().describe("estado del embudo tal cual el CRM, p.ej. 'Propuesta enviada' (contiene, sin acentos)"),
+    temperatura: z.enum(["caliente", "templado", "frio"]).optional().describe("temperatura de la conversación (intel de Fransua)"),
+    silencio_max_dias: z.number().optional().describe("solo leads cuyo ÚLTIMO mensaje sea de hace ≤N días (p.ej. 7 = esta semana)"),
+    limit: z.number().optional().describe("máx resultados (por defecto 60)"),
+  },
+  async (args: { estado?: string; temperatura?: "caliente" | "templado" | "frio"; silencio_max_dias?: number; limit?: number }) => {
+    const norm = (s: unknown) =>
+      String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+    const db = getDb();
+    const dir = db.prepare("SELECT source_row, phone, name, estado FROM lead_directory").all() as {
+      source_row: number; phone: string | null; name: string | null; estado: string | null;
+    }[];
+    if (dir.length === 0) return txt("El directorio del CRM aún no está sincronizado (espera unos minutos).");
+
+    // Intel por teléfono/fila para temperatura y recencia (best-effort).
+    const intel = new Map<string, { temperatura: string | null; last_ts: number | null }>();
+    if (brainConfigured()) {
+      try {
+        const { data } = await getSupabase()
+          .from("chat_intel")
+          .select("source_row,phone,temperatura,last_ts")
+          .limit(3000);
+        for (const r of (data ?? []) as { source_row: number | null; phone: string | null; temperatura: string | null; last_ts: number | null }[]) {
+          if (r.phone) intel.set(String(r.phone), { temperatura: r.temperatura, last_ts: r.last_ts });
+          if (r.source_row != null) intel.set(`row:${r.source_row}`, { temperatura: r.temperatura, last_ts: r.last_ts });
+        }
+      } catch { /* sin intel: el filtro de estado sigue funcionando */ }
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const qEstado = norm(args.estado);
+    const out: string[] = [];
+    let total = 0;
+    const limit = Math.min(Math.max(args.limit ?? 60, 1), 100);
+    for (const l of dir) {
+      if (qEstado && !norm(l.estado).includes(qEstado)) continue;
+      const it = (l.phone && intel.get(l.phone)) || intel.get(`row:${l.source_row}`) || null;
+      const temp = norm(it?.temperatura);
+      if (args.temperatura && temp !== args.temperatura) continue;
+      if (args.silencio_max_dias != null) {
+        if (!it?.last_ts) continue;
+        if ((nowSec - Number(it.last_ts)) / 86400 > args.silencio_max_dias) continue;
+      }
+      total++;
+      if (out.length < limit) {
+        const silencio = it?.last_ts ? `${Math.round((nowSec - Number(it.last_ts)) / 86400)}d` : "sin conversación";
+        out.push(`- ${l.name ?? "?"} (fila ${l.source_row})${l.phone ? ` · tel ${l.phone}` : ""} · ${l.estado ?? "?"} · ${it?.temperatura ?? "sin intel"} · últ. msg ${silencio}`);
+      }
+    }
+    if (total === 0) return txt("Ningún lead del CRM cumple esos filtros.");
+    return txt(
+      `${total} leads del CRM cumplen (muestro ${out.length}; para [[VISTA_CRM]] usa sus teléfonos, la fila como apoyo):\n` +
+        out.join("\n")
+    );
+  }
+);
+
 const dormidosReactivables = tool(
   "dormidos_reactivables",
   "Lista los leads DORMIDOS (por defecto ≥30 días sin hablar) cuya ÚLTIMA conversación cae en el año indicado y que, SEGÚN SU CONVERSACIÓN (temperatura caliente/templado + resumen), tienen capacidad de reactivarse. Excluye clientes/alumnos. Úsala para «¿qué dormidos de {año} son reactivables?». OJO: filtra por el AÑO de la última conversación (dormido desde ese año), no por la fecha de alta.",
@@ -466,6 +536,7 @@ const READ_TOOL_NAMES = [
   "mcp__fransua__ficha_lead",
   "mcp__fransua__foto_negocio",
   "mcp__fransua__buscar_leads",
+  "mcp__fransua__leads_del_crm",
   "mcp__fransua__conversacion_lead",
   "mcp__fransua__dormidos_reactivables",
   "mcp__fransua__consultar_agenda",
@@ -493,7 +564,7 @@ export async function runAgent(prompt: string, model?: string, actor?: string): 
   const fransuaMcpServer = createSdkMcpServer({
     name: "fransua",
     version: "1.0.0",
-    tools: [fichaLead, fotoNegocio, buscarLeads, conversacionLead, dormidosReactivables, consultarAgenda, ...writeTools],
+    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, ...writeTools],
   });
 
   const q = query({

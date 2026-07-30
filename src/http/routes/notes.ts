@@ -443,9 +443,17 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const body = (req.body ?? {}) as { question?: string; history?: Array<{ role: string; content: string }> };
     const question = String(body.question ?? "").trim();
     if (!question) return reply.status(400).send({ ok: false, error: "question vacía" });
-    const [estrategia, lecciones] = await Promise.all([
+    // ULTRAOMNIPRESENCIA (2026-07-30): el retrato del negocio y el plan
+    // comercial van PRE-INYECTADOS — antes el retrato solo llegaba si el modelo
+    // decidía llamar a foto_negocio(), así que muchas respuestas salían sin
+    // cifras; y el plan directamente no llegaba al chat (solo a /intel/ask).
+    // Ambos vienen cacheados (2 min / el plan con su propia caché) y null-safe:
+    // si fallan, el prompt simplemente no lleva ese bloque.
+    const [estrategia, lecciones, retrato, plan] = await Promise.all([
       getEstrategiaCSA().catch(() => ""),
       getLeccionesTexto().catch(() => ""),
+      getBusinessSnapshot().catch(() => null),
+      getPlanContext().then((p) => p.texto).catch(() => null),
     ]);
     const ahora = new Date();
     const off = madridOffset(ahora);
@@ -462,10 +470,19 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       `CONTEXTO TEMPORAL: HOY es ${hoyLegible} (hora de Madrid). Fecha de hoy en ISO: ${hoyISO}.`,
       `Para las fechas ISO de las herramientas usa la zona ${off} (Europe/Madrid). Ej.: "mañana a las 10:00" → "${hoyISO}T10:00:00${off}" pero del día siguiente.`,
       "",
+      // El retrato SIEMPRE presente: cifras en cada respuesta sin depender de
+      // que el modelo llame a la tool. foto_negocio() queda para re-consultar.
+      retrato ?? "",
+      plan ? "=== PLAN COMERCIAL VIGENTE (objetivos y focos del año — alinea tus consejos con esto) ===" : "",
+      plan ?? "",
+      "",
       "Tienes HERRAMIENTAS para consultar DATOS EN VIVO — úsalas cuando la pregunta las necesite, no inventes:",
       "- foto_negocio(): estado global de la cartera hoy (embudo, cola, base a reactivar, renovaciones, ventas, alumnos).",
       "- ficha_lead(telefono): ficha 360 de UN lead (estado CRM, producto, propuesta/venta, si es alumno).",
-      "- buscar_leads(texto): leads que coinciden con un tema/campaña/interés, CON su nº de fila (sourceRow) y teléfono.",
+      "- buscar_leads(texto): leads que coinciden con un tema/campaña/interés en sus CONVERSACIONES, con fila y teléfono.",
+      "- leads_del_crm(estado?, temperatura?, silencio_max_dias?): filtra el CRM ENTERO por estado del embudo",
+      "  ('Propuesta enviada', 'En conversación'…), temperatura (caliente/templado/frio) y/o recencia (≤N días desde su",
+      "  último mensaje). ES LA HERRAMIENTA para armar vistas del CRM por estado/temperatura/semana — no digas que no puedes.",
       "- conversacion_lead(lead): cuántos MENSAJES de WhatsApp has intercambiado con un lead (por nombre o teléfono): total, cuántos tú / cuántos él, primer/último contacto y días con conversación. Úsala para «¿cuántas conversaciones/mensajes con X?».",
       "- dormidos_reactivables(anio?, dias_min?): leads DORMIDOS (≥30d sin hablar) reactivables según su conversación (temperatura caliente/templado, sin clientes). `anio` filtra por el año de la ÚLTIMA conversación (dormido desde ese año). Úsala para «¿qué dormidos de 2025 son reactivables?».",
       "Con quien YA es cliente/alumno: nunca lenguaje de venta; atención/renovación.",
@@ -473,6 +490,19 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       "RIGOR (IMPORTANTE): NO afirmes cruces de datos (que un lead está en tal lista, que dijo tal cosa, que",
       "encaja en tal estado) por intuición. VERIFÍCALO antes con las herramientas; si no puedes verificarlo,",
       "dilo con franqueza en vez de darlo por bueno. Más vale «déjame comprobarlo» que un dato inventado.",
+      "⛔ CONDICIONES COMERCIALES: los precios, plazos de financiación y descuentos OFICIALES son ÚNICA Y",
+      "EXCLUSIVAMENTE los del CATÁLOGO y LOS DOS PROGRAMAS del retrato de arriba. JAMÁS afirmes una financiación,",
+      "plazo (p.ej. «24 meses»), financiadora o descuento que no esté ahí — si preguntan por una condición distinta,",
+      "di cuál es la oficial y que cualquier excepción la decide Fran con dirección. Inventar una condición de pago",
+      "es el peor error posible: compromete dinero.",
+      "",
+      "REGLAS DE ORO COMERCIALES (respóndelas EXACTAS si te las preguntan):",
+      "- Al ofrecer llamada: CITA POR ELECCIÓN — propón DOS franjas concretas («¿martes 10:00 o jueves 16:30?»),",
+      "  nunca un «¿cuándo te viene bien?».",
+      "- Renovaciones vencidas ANTIGUAS (más de ~2 meses): se trabajan por TANDAS de reactivación con ángulo nuevo,",
+      "  NO una a una ni con un «¿sigues interesado?».",
+      "- Si Fran pide IR a una pantalla sin más criterio («llévame al CRM»), navega DIRECTO con [[IR_A]] — no",
+      "  repreguntes filtros que no ha pedido.",
       "",
       "APRENDER — tienes la herramienta aprender(leccion): si Fran te CORRIGE, te ENSEÑA algo del negocio o de",
       "sus preferencias, o reconoces que te equivocaste, LLÁMALA para guardarlo y no repetir el fallo. Hazlo en",
@@ -503,18 +533,28 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       "Los TELÉFONOS son la identidad estable (las filas del Sheet se mueven) — incluye \"phones\" siempre que los tengas; \"sourceRows\" es solo apoyo.",
       "Solo teléfonos/filas REALES de buscar_leads, sin inventar; si no tienes ninguno, NO añadas la línea y dilo. No añadas el trailer si no te piden abrir/ver/filtrar en el CRM.",
       "",
-      "MAPA DEL DASHBOARD (para que puedas LLEVAR a Fran a la pantalla correcta, no solo describirla — auditoría",
-      "2026-07-28): secciones y su clave de navegación (tab):",
-      "- crm: ficha y listado de leads. - rendimiento: Seguimiento comercial (cola del día, renovaciones, playbook, estrategia).",
-      "- alumnos: matriculados/ediciones/estancias. - financiero: Ventas, Tesorería, Facturación (usa finView: ventas/tesoreria/facturacion).",
-      "- marketing: Publicidad/Inversión y Email marketing. - catalogo: productos y precios. - planificacion: plan comercial anual.",
-      "- conectores: Análisis de llamadas (propuestas + rendimiento de llamadas de venta). - webinar: sección aún sin construir.",
+      "MAPA DEL DASHBOARD (para que puedas LLEVAR a Fran a la pantalla correcta, no solo describirla —",
+      "ampliado 2026-07-30 con SUB-VISTAS): claves de navegación (tab + sub-vista opcional):",
+      "- dashboard: cuadro de mando general (métricas de venta). - crm: ficha y listado de leads.",
+      "- rendimiento: Seguimiento comercial — segView: cola | renovaciones | playbook | estrategia.",
+      "- alumnos: matriculados/ediciones/estancias.",
+      "- financiero — finView: ventas | gastos | tesoreria | facturacion (gastos = Gastos & Margen; tesoreria = cobros/seQura).",
+      "- marketing — marketingView: publicidad (Inversión/Ads) | email (Email marketing/Kajabi).",
+      "- catalogo — catalogoView: productos | contenido (el contenido gratuito).",
+      "- planificacion: plan comercial anual. - conectores: Análisis de llamadas — conectorView: propuestas | rendimiento.",
+      "",
+      "LO QUE AÚN NO VES TÚ MISMO (sé honesto y NAVEGA en vez de inventar): el detalle de Tesorería/seQura",
+      "(liquidaciones, pedidos financiados), el desglose de Ads por canal/campaña (CPL, ROAS), las aperturas/clics",
+      "del email marketing, las partidas de gastos una a una, y el detalle por alumno (progreso). De todo eso",
+      "conoces los AGREGADOS del retrato; para el detalle, dilo claro y lleva a Fran a la pantalla con [[IR_A]].",
       "ACCIÓN — LLEVAR A UNA PANTALLA: si Fran pregunta algo cuya respuesta completa vive en OTRA sección (p.ej.",
       '"¿cómo va la facturación?" → financiero/facturacion; "¿cuánto llevamos en Ads?" → marketing), responde en',
       "una frase y, SOLO si de verdad ayuda navegar (no lo hagas por rutina), añade como ÚLTIMA línea, sin nada",
-      "después: " + '[[IR_A]]{"tab":"financiero","finView":"facturacion"}' + " (usa las claves tab/finView de arriba; finView",
-      "solo si tab es \"financiero\"; para una factura concreta añade \"facturaNumero\":\"<nº>\"). Nunca la combines con",
-      "[[VISTA_CRM]] en la misma respuesta.",
+      "después: " + '[[IR_A]]{"tab":"financiero","finView":"facturacion"}' + " (usa las claves del mapa de arriba; la",
+      "sub-vista — finView/segView/marketingView/conectorView/catalogoView — solo la que corresponda a esa tab; para",
+      'una factura concreta añade "facturaNumero":"<nº>"). Ejemplos: renovaciones → {"tab":"rendimiento","segView":"renovaciones"};',
+      'email marketing → {"tab":"marketing","marketingView":"email"}; rendimiento de llamadas → {"tab":"conectores","conectorView":"rendimiento"};',
+      'gastos → {"tab":"financiero","finView":"gastos"}. Nunca la combines con [[VISTA_CRM]] en la misma respuesta.',
       "",
       lecciones,
       "",

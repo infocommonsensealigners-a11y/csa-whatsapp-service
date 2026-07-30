@@ -34,7 +34,13 @@ const RECHAZO = [
   "no tengo forma de",
   "mis herramientas no",
   "no dispongo de",
-  "no sé", // "no sé cuántas…"
+  // "no sé" A SECAS daba falsos positivos brutales ("no sé si te compensa…" en
+  // una respuesta perfectamente resuelta). Formas inequívocas de no-saber:
+  "no lo sé",
+  "no sabría decirte",
+  "no sé cuánt", // "no sé cuántas/cuántos…"
+  "no sé qué",
+  "no sé cuál",
   "no tengo acceso",
   "no puedo sacar",
   "no puedo filtrar",

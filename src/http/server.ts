@@ -22,6 +22,7 @@ import { registerCallRoutes } from "./routes/calls";
 import { registerLinkLeadsRoutes } from "./routes/linkLeads";
 import { registerMarketingRoutes } from "./routes/marketing";
 import { registerSendRoutes } from "./routes/send";
+import { registerLabelRoutes } from "./routes/labels";
 
 export async function startHttpServer(): Promise<FastifyInstance> {
   // bodyLimit alto: una exportación de chat larga puede pesar varios MB.
@@ -44,6 +45,7 @@ export async function startHttpServer(): Promise<FastifyInstance> {
   registerLinkLeadsRoutes(app);
   registerMarketingRoutes(app); // /intel/marketing-ask — resucita la barra de Inversión
   registerSendRoutes(app); // /chats/:jid/send — respuesta MANUAL desde el teléfono flotante
+  registerLabelRoutes(app); // /labels y /chats/:jid/labels — etiquetas BIDIRECCIONALES
   // Pendiente F1: media de mensajes + links/matcher. F2: tags/artifacts/jobs.
 
   await app.listen({ host: config.host, port: config.port });

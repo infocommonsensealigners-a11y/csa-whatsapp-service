@@ -342,7 +342,10 @@ export function registerIngest(): void {
   onWaEvent("contacts.upsert", (contacts) => applyContactNames(contacts, false));
   onWaEvent("contacts.update", (contacts) => applyContactNames(contacts, true));
 
-  // Etiquetas de WhatsApp Business (las del usuario en la app) — read-only.
+  // ETIQUETAS de WhatsApp Business — sentido WHATSAPP → AQUÍ (la escritura en
+  // sentido contrario vive en src/wa/labels.ts, el único fichero autorizado).
+  // Emiten `labels.updated` para que la interfaz refresque al instante: si Fran
+  // etiqueta desde el móvil, lo ve en el teléfono flotante sin recargar.
   onWaEvent("labels.edit", (label) => {
     try {
       getDb()
@@ -356,6 +359,7 @@ export function registerIngest(): void {
           color: typeof label.color === "number" ? label.color : 0,
           deleted: label.deleted ? 1 : 0,
         });
+      emitSse({ type: "labels.updated" });
     } catch (err) {
       console.error("[ingest] labels.edit:", (err as Error).message);
     }
@@ -368,10 +372,18 @@ export function registerIngest(): void {
       if (assoc?.type !== "label_jid" || !assoc.chatId || !assoc.labelId) return;
       const db = getDb();
       if (type === "add") {
+        // Si la etiqueta aún no está en el catálogo (su `labels.edit` no llegó o
+        // se perdió), se siembra un hueco para que el JOIN de /chats NO la
+        // descarte: mejor una etiqueta con nombre pendiente que una invisible.
+        db.prepare(`INSERT OR IGNORE INTO wa_labels(id, name, color, deleted) VALUES (?, '', 0, 0)`).run(assoc.labelId);
         db.prepare(`INSERT OR IGNORE INTO wa_chat_labels(chat_jid, label_id) VALUES (?, ?)`).run(assoc.chatId, assoc.labelId);
       } else {
         db.prepare(`DELETE FROM wa_chat_labels WHERE chat_jid = ? AND label_id = ?`).run(assoc.chatId, assoc.labelId);
       }
+      // La lista de chats muestra las etiquetas → refresca esa fila, y avisa del
+      // catálogo por si el selector abierto tiene que repintarse.
+      emitSse({ type: "chat.updated", jid: assoc.chatId });
+      emitSse({ type: "labels.updated" });
     } catch (err) {
       console.error("[ingest] labels.association:", (err as Error).message);
     }

@@ -71,18 +71,20 @@ export function registerChatRoutes(app: FastifyInstance): void {
     // Defensivo: si las tablas de etiquetas faltan o fallan, NUNCA rompe /chats.
     let chats;
     try {
+      // `id` va incluido desde 2026-07-30: la interfaz lo necesita para poder
+      // poner/quitar la etiqueta (bidireccional, ver src/wa/labels.ts).
       const labelStmt = db.prepare(
-        `SELECT l.name AS name, l.color AS color
+        `SELECT l.id AS id, l.name AS name, l.color AS color
            FROM wa_chat_labels cl JOIN wa_labels l ON l.id = cl.label_id
           WHERE cl.chat_jid = ? AND l.deleted = 0
           ORDER BY l.name`
       );
       chats = rows.map((r) => ({
         ...toSummary(r),
-        waLabels: labelStmt.all(r.jid) as Array<{ name: string; color: number }>,
+        waLabels: labelStmt.all(r.jid) as Array<{ id: string; name: string; color: number }>,
       }));
     } catch {
-      chats = rows.map((r) => ({ ...toSummary(r), waLabels: [] as Array<{ name: string; color: number }> }));
+      chats = rows.map((r) => ({ ...toSummary(r), waLabels: [] as Array<{ id: string; name: string; color: number }> }));
     }
     return { chats, total };
   });

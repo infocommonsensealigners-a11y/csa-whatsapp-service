@@ -42,6 +42,8 @@ export interface TagRef {
 /** Etiqueta de WhatsApp Business (la que el usuario pone en la app). `color` es
  *  el índice 0-19 de la paleta de WhatsApp; el dashboard lo mapea a un color. */
 export interface WaLabel {
+  /** id de la etiqueta en WhatsApp — necesario para ponerla/quitarla. */
+  id?: string;
   name: string;
   color: number;
 }
@@ -60,7 +62,7 @@ export interface ChatSummary {
   approvedTags: TagRef[];
   proposedTags: TagRef[];
   hasAbstract: boolean;
-  /** Etiquetas de WhatsApp Business del chat (read-only, del móvil del usuario). */
+  /** Etiquetas de WhatsApp Business del chat (bidireccional desde 2026-07-30). */
   waLabels?: WaLabel[];
 }
 
@@ -128,6 +130,7 @@ export type WaSseEvent =
   | { type: "connection"; state: WaConnectionState }
   | { type: "message.new"; jid: string }
   | { type: "chat.updated"; jid: string }
+  | { type: "labels.updated" } // catálogo/asociaciones de etiquetas de WhatsApp Business
   | { type: "chats.synced" } // volcado masivo (history sync): refrescar lista entera
   | { type: "backfill.progress" } // avance del backfill de historial
   | { type: "artifact.new"; jid: string; kind: AiArtifactKind }

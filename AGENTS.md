@@ -60,6 +60,27 @@ dashboard se puede **RESPONDER**. La garantía no se borró, se **acotó**:
 allowlist**: es una decisión de producto y de riesgo de cuenta que debe tomar el
 usuario explícitamente.
 
+## 🏷️ ETIQUETAS: permitido SOLO en `src/wa/labels.ts` (decisión del usuario, 30-07-2026)
+
+Las **etiquetas de WhatsApp Business son BIDIRECCIONALES**: lo que se marca en el
+teléfono flotante del dashboard se escribe en WhatsApp, y lo que Fran etiqueta
+desde el móvil aparece aquí. Mismo patrón de acotación que el envío:
+
+- `check:nosend` prohíbe **`addChatLabel`/`removeChatLabel` en todo `src/`
+  salvo `src/wa/labels.ts`**. Fransua (`src/ai/`, `src/brain/`) NO puede
+  etiquetar: no se le ha dado la herramienta ni podría nombrarla.
+- **`chatModify` sigue prohibido SIN excepción, ni siquiera ahí.** Es la puerta
+  ancha (marca como leído, archiva, silencia) y no la usamos: `addChatLabel` /
+  `removeChatLabel` son la puerta estrecha, y etiquetar no envía nada ni toca
+  los acuses de lectura.
+- Orden de escritura en `setChatLabel`: **primero WhatsApp, después el espejo
+  local**. Si WhatsApp rechaza, la copia local no se toca — nunca se enseña una
+  etiqueta que allí no existe. Auditoría en `wa_label_audit`.
+- El catálogo (`wa_labels`) se llena con los eventos `labels.edit` de la
+  sincronización de estado. Si Fran crea una etiqueta nueva en el móvil,
+  `POST /labels/resync` se la pide a WhatsApp (botón "Traer etiquetas nuevas"
+  en el menú de los 3 puntos).
+
 ## Datos que no se tocan a la ligera
 - El volumen `/data` PERSISTE entre deploys (verificado); las "pérdidas" históricas
   fueron crashes por repo mal conectado, no borrados.

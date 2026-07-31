@@ -23,11 +23,26 @@ const FORBIDDEN_TOKENS = [
   "readMessages",
   "chatModify",
   "sendPresenceUpdate",
+  // Etiquetado (2026-07-30): puerta ESTRECHA para poner/quitar etiquetas de
+  // WhatsApp Business. No envía nada ni toca acuses de lectura, pero sigue
+  // siendo escritura hacia la cuenta → mismo trato que el envío: un único
+  // fichero autorizado, y Fransua (src/ai, src/brain) sin acceso.
+  "addChatLabel",
+  "removeChatLabel",
 ] as const;
 
-/** Único fichero donde se permite el token de envío de texto (y SOLO ese token). */
-const SEND_ALLOWLIST = new Set(["src/wa/send.ts".replace(/\//g, path.sep)]);
-const SEND_TOKEN = "sendMessage";
+/**
+ * Token → único fichero donde ese token está permitido. Todo lo demás, y
+ * cualquier otro token, sigue prohibido en TODO src/.
+ * ⚠️ `chatModify` NO tiene excepción a propósito: es la puerta ancha (marcar
+ * leído, archivar, silenciar) y no la usamos ni para etiquetar — para eso están
+ * addChatLabel/removeChatLabel, que Baileys implementa por debajo.
+ */
+const TOKEN_ALLOWLIST = new Map<string, string>([
+  ["sendMessage", "src/wa/send.ts".replace(/\//g, path.sep)],
+  ["addChatLabel", "src/wa/labels.ts".replace(/\//g, path.sep)],
+  ["removeChatLabel", "src/wa/labels.ts".replace(/\//g, path.sep)],
+]);
 
 const SRC_DIR = path.resolve(process.cwd(), "src");
 
@@ -50,13 +65,12 @@ const violations: Violation[] = [];
 
 for (const file of walk(SRC_DIR)) {
   const rel = path.relative(process.cwd(), file);
-  const esModuloDeEnvio = SEND_ALLOWLIST.has(rel);
   const lines = fs.readFileSync(file, "utf-8").split(/\r?\n/);
   lines.forEach((text, i) => {
     for (const token of FORBIDDEN_TOKENS) {
       if (!text.includes(token)) continue;
-      // La ÚNICA excepción: el token de envío de texto, en el módulo de envío.
-      if (esModuloDeEnvio && token === SEND_TOKEN) continue;
+      // Única excepción: ese token, en SU fichero autorizado (y solo ahí).
+      if (TOKEN_ALLOWLIST.get(token) === rel) continue;
       violations.push({
         file: rel,
         line: i + 1,
@@ -76,6 +90,6 @@ if (violations.length > 0) {
 }
 
 console.log(
-  "✓ check:nosend OK — la publicación de WhatsApp solo existe en src/wa/send.ts (envío manual); " +
-    "el resto de src/ (incluido Fransua) no puede ni nombrarla."
+  "✓ check:nosend OK — publicar texto solo en src/wa/send.ts y etiquetar solo en src/wa/labels.ts; " +
+    "el resto de src/ (incluido Fransua) no puede ni nombrarlas."
 );

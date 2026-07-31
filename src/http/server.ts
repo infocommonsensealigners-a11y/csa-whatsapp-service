@@ -19,6 +19,7 @@ import { registerPlanRoutes } from "./routes/plan";
 import { registerUsageRoutes } from "./routes/usage";
 import { registerProposalRoutes } from "./routes/proposals";
 import { registerCallRoutes } from "./routes/calls";
+import { registerRenewalRoutes } from "./routes/renewals";
 import { registerLinkLeadsRoutes } from "./routes/linkLeads";
 import { registerMarketingRoutes } from "./routes/marketing";
 import { registerSendRoutes } from "./routes/send";
@@ -42,6 +43,7 @@ export async function startHttpServer(): Promise<FastifyInstance> {
   registerUsageRoutes(app);
   registerProposalRoutes(app);
   registerCallRoutes(app);
+  registerRenewalRoutes(app); // /calls/analyze-renewal — contento del alumno + mejoras del curso
   registerLinkLeadsRoutes(app);
   registerMarketingRoutes(app); // /intel/marketing-ask — resucita la barra de Inversión
   registerSendRoutes(app); // /chats/:jid/send — respuesta MANUAL desde el teléfono flotante

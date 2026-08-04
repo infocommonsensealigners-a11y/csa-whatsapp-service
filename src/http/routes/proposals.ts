@@ -51,6 +51,10 @@ export interface ExtractedProposal {
   rea: ProposalRea[];
   starBlock: ProposalStarBlock;
   giftDeadlineOverride: string | null;
+  /** Beneficios concretos de ESTA edición que se prometieron en la llamada (p. ej.
+   *  "el acceso a la plataforma durante agosto va de regalo"). Van como puntos
+   *  del bloque "Beneficio adicional", NO dentro de la fecha límite. */
+  regaloExtraOverride: string[] | null;
   planDescOverride: string | null;
   fechasOverride: string[] | null;
   confianza: "alta" | "media" | "baja";
@@ -59,7 +63,7 @@ export interface ExtractedProposal {
 
 const SCHEMA_KEYS = [
   "modalidad", "drNombre", "drNombreArt", "heroLead1", "heroLead2", "needs", "rea", "starBlock",
-  "giftDeadlineOverride", "planDescOverride", "fechasOverride", "confianza", "avisos",
+  "giftDeadlineOverride", "regaloExtraOverride", "planDescOverride", "fechasOverride", "confianza", "avisos",
 ] as const;
 
 
@@ -103,7 +107,9 @@ REGLAS (obligatorias):
 - CONSISTENCIA: cualquier nombre propio que se repita (marca de alineador, técnica, nombre de persona, clínica...) debe escribirse EXACTAMENTE IGUAL cada vez que aparezca, tanto en "heroLead1"/"heroLead2" como en "needs"/"rea" — nunca dos grafías distintas del mismo dato en la misma propuesta. Si la transcripción (voz→texto de Plaud) lo transcribe de forma ambigua o dudosa (marca poco común, nombre extranjero), elige UNA sola grafía y úsala en todos los sitios, y genera un aviso de tipo "general" avisando de que ese nombre puede no estar bien transcrito.
 - "modalidad": "estancia" (lo normal) o "extension". Pon "extension" SOLO si en la llamada queda claro que el doctor/a NO va a poder venir a la estancia clínica presencial en España — porque vive fuera (Latinoamérica: México, Colombia, Argentina, Chile, Perú, Ecuador…) o porque dice que no va a viajar. En ese caso el programa NO pierde la estancia sin más: se sustituye por 3 MESES EXTRA de formación (13 meses en total), y así se lo cuentas donde toque (hero y "rea"). Si vive en España o no se habla del tema, "estancia".
 - "starBlock": cuál de estos 4 bloques FIJOS del programa es el dolor PRINCIPAL de este doctor/a — responde exactamente uno de: "biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (Estancia clínica — más casos/marketing/equipo).
-- "giftDeadlineOverride"/"planDescOverride"/"fechasOverride": antes de dejarlos en null, repasa TODA la transcripción buscando cualquier fecha, plazo o mes que el/la doctor/a o Fran mencionen (fecha límite de inscripción, inicio de curso, vacaciones, "para cuándo", pago aplazado, etc.) — si se menciona una fecha/plazo EXPLÍCITO distinto al habitual del programa, captúralo aquí en vez de dejarlo pasar; si hay una fecha mencionada pero no queda claro a qué corresponde exactamente, captúrala igualmente en "fechasOverride" y añade un aviso de campo "fechas" explicando la duda. Solo se queda todo en null si la llamada de verdad no menciona ninguna fecha. Nunca inventes precios ni IBAN.
+- "giftDeadlineOverride": SOLO UNA FECHA, corta y tal como se diría en alto ("1 de septiembre", "viernes 31 de julio"). Se pinta detrás de "Beneficio adicional por inscribirte antes del", asi que una frase ahi deja el titular sin sentido (paso de verdad: salio "…antes del Si te matriculas durante estos dias de agosto…"). Si en la llamada se explica una CONDICION o un beneficio de la edicion, no lo metas aqui: va en "regaloExtraOverride".
+- "regaloExtraOverride": array de beneficios concretos que se prometieron en la llamada, redactados como puntos cortos y naturales (p. ej. "Acceso a la plataforma durante agosto de regalo: no resta de los 10 meses de formacion."). null si no se prometio nada aparte de lo habitual.
+- "planDescOverride"/"fechasOverride": antes de dejarlos en null, repasa TODA la transcripción buscando cualquier fecha, plazo o mes que el/la doctor/a o Fran mencionen (fecha límite de inscripción, inicio de curso, vacaciones, "para cuándo", pago aplazado, etc.) — si se menciona una fecha/plazo EXPLÍCITO distinto al habitual del programa, captúralo aquí en vez de dejarlo pasar; si hay una fecha mencionada pero no queda claro a qué corresponde exactamente, captúrala igualmente en "fechasOverride" y añade un aviso de campo "fechas" explicando la duda. Solo se queda todo en null si la llamada de verdad no menciona ninguna fecha. Nunca inventes precios ni IBAN.
 - "confianza": "alta" si la llamada da material claro para todo lo anterior, "media" si falta algo, "baja" si la transcripción es pobre/corta.
 - "avisos": lista de avisos ESTRUCTURADOS — cada uno es un objeto {campo, indice, mensaje} para que quien revise sepa EXACTAMENTE dónde mirar:
   - "campo": uno de "drNombre" (nombre/apellido del doctor/a incompleto o dudoso), "hero" (los 2 párrafos de intro), "starBlock" (el bloque destacado elegido), "needs" (un punto de dolor concreto — usa "indice"), "rea" (una objeción concreta — usa "indice"), "fechas" (fecha límite/pago/fechas clave pendientes de confirmar), o "general" (cualquier otra cosa que no encaje).
@@ -129,8 +135,12 @@ function validate(obj: unknown): ExtractedProposal | null {
   const modalidad: ProposalModalidad = o.modalidad === "extension" ? "extension" : "estancia";
   const starBlocks: ProposalStarBlock[] = ["biomecanica", "revision", "tecnicas", "estancia"];
   const starBlock = starBlocks.includes(o.starBlock as ProposalStarBlock) ? (o.starBlock as ProposalStarBlock) : "revision";
+  const regaloExtra = Array.isArray(o.regaloExtraOverride)
+    ? o.regaloExtraOverride.map((x) => String(x ?? "").trim()).filter(Boolean).slice(0, 4)
+    : [];
   return {
     modalidad,
+    regaloExtraOverride: regaloExtra.length ? regaloExtra : null,
     drNombre: o.drNombre.trim(),
     drNombreArt: typeof o.drNombreArt === "string" && o.drNombreArt.trim() ? o.drNombreArt.trim() : o.drNombre.trim(),
     heroLead1: typeof o.heroLead1 === "string" ? o.heroLead1.trim() : "",

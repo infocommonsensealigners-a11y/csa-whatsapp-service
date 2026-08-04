@@ -33,7 +33,16 @@ export interface ProposalAviso {
   mensaje: string;
 }
 
+/**
+ * ¿Va a hacer la ESTANCIA presencial o se le sustituye por 3 meses más de
+ * programa? Regla del usuario (2026-08-03): quien vive fuera —típico en
+ * Latinoamérica— no viaja a España, y en vez de que pierda la estancia se
+ * prolonga el curso a 13 meses, para que no sienta que el programa vale menos.
+ */
+export type ProposalModalidad = "estancia" | "extension";
+
 export interface ExtractedProposal {
+  modalidad: ProposalModalidad;
   drNombre: string;
   drNombreArt: string;
   heroLead1: string;
@@ -49,7 +58,7 @@ export interface ExtractedProposal {
 }
 
 const SCHEMA_KEYS = [
-  "drNombre", "drNombreArt", "heroLead1", "heroLead2", "needs", "rea", "starBlock",
+  "modalidad", "drNombre", "drNombreArt", "heroLead1", "heroLead2", "needs", "rea", "starBlock",
   "giftDeadlineOverride", "planDescOverride", "fechasOverride", "confianza", "avisos",
 ] as const;
 
@@ -92,6 +101,7 @@ REGLAS (obligatorias):
 - "needs": 4 a 6 puntos de dolor REALES de la llamada. "want" = una frase citada ENTRE COMILLAS ANGULARES «» lo más textual posible a como lo dijo el/la doctor/a (no la inventes; si no hay cita textual clara, parafrasea en primera persona). "tag" = etiqueta corta (2-4 palabras) del bloque/tema al que corresponde. "fix" = cómo se resuelve en el programa (con el Dr. Lozano), 1-3 frases.
 - "rea": 5 a 7 objeciones o dudas que salieron en la llamada (horario, nivel/experiencia previa, tiene clínica propia o colabora en varias, si aún no tiene pacientes, fechas/vacaciones, dónde es la estancia, etc.), resueltas. "t" = titular en pocas palabras terminado en ":". "d" = resolución en 1-2 frases.
 - CONSISTENCIA: cualquier nombre propio que se repita (marca de alineador, técnica, nombre de persona, clínica...) debe escribirse EXACTAMENTE IGUAL cada vez que aparezca, tanto en "heroLead1"/"heroLead2" como en "needs"/"rea" — nunca dos grafías distintas del mismo dato en la misma propuesta. Si la transcripción (voz→texto de Plaud) lo transcribe de forma ambigua o dudosa (marca poco común, nombre extranjero), elige UNA sola grafía y úsala en todos los sitios, y genera un aviso de tipo "general" avisando de que ese nombre puede no estar bien transcrito.
+- "modalidad": "estancia" (lo normal) o "extension". Pon "extension" SOLO si en la llamada queda claro que el doctor/a NO va a poder venir a la estancia clínica presencial en España — porque vive fuera (Latinoamérica: México, Colombia, Argentina, Chile, Perú, Ecuador…) o porque dice que no va a viajar. En ese caso el programa NO pierde la estancia sin más: se sustituye por 3 MESES EXTRA de formación (13 meses en total), y así se lo cuentas donde toque (hero y "rea"). Si vive en España o no se habla del tema, "estancia".
 - "starBlock": cuál de estos 4 bloques FIJOS del programa es el dolor PRINCIPAL de este doctor/a — responde exactamente uno de: "biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (Estancia clínica — más casos/marketing/equipo).
 - "giftDeadlineOverride"/"planDescOverride"/"fechasOverride": antes de dejarlos en null, repasa TODA la transcripción buscando cualquier fecha, plazo o mes que el/la doctor/a o Fran mencionen (fecha límite de inscripción, inicio de curso, vacaciones, "para cuándo", pago aplazado, etc.) — si se menciona una fecha/plazo EXPLÍCITO distinto al habitual del programa, captúralo aquí en vez de dejarlo pasar; si hay una fecha mencionada pero no queda claro a qué corresponde exactamente, captúrala igualmente en "fechasOverride" y añade un aviso de campo "fechas" explicando la duda. Solo se queda todo en null si la llamada de verdad no menciona ninguna fecha. Nunca inventes precios ni IBAN.
 - "confianza": "alta" si la llamada da material claro para todo lo anterior, "media" si falta algo, "baja" si la transcripción es pobre/corta.
@@ -100,6 +110,7 @@ REGLAS (obligatorias):
   - "indice": posición 0-based del elemento de "needs"/"rea" al que se refiere (null si no aplica o si "campo" no es "needs"/"rea").
   - "mensaje": explicación breve y concreta (p. ej. "No se recogió el apellido, solo el nombre de pila", "Cita parafraseada, no es literal porque no se dijo así exactamente", "Quedó pendiente de confirmar con el Dr. Lozano, no se ha aplicado como fecha").
   Genera UN aviso por cada cosa de la que no estés seguro/a al 100%: dato incompleto, cita no literal, información pendiente de confirmar, ambigüedad en el bloque estrella, etc. Si todo quedó claro, deja el array vacío.
+- Si "modalidad" es "extension": NO prometas la estancia presencial en NINGÚN texto (ni hero, ni needs, ni rea) y NO elijas "estancia" como starBlock. Donde toque, di que se sustituye por 3 meses extra de formación —13 meses en total—, con las palabras del doctor/a sobre por qué no puede viajar.
 - Español de España, sin inventar datos que no estén en la transcripción. Nunca menciones precios, el IBAN ni enlaces (van fijos en la plantilla, no los tocas).
 
 TRANSCRIPCIÓN (Plaud):
@@ -115,9 +126,11 @@ function validate(obj: unknown): ExtractedProposal | null {
   const o = obj as Record<string, unknown>;
   if (typeof o.drNombre !== "string" || !o.drNombre.trim()) return null;
   if (!Array.isArray(o.needs) || !Array.isArray(o.rea)) return null;
+  const modalidad: ProposalModalidad = o.modalidad === "extension" ? "extension" : "estancia";
   const starBlocks: ProposalStarBlock[] = ["biomecanica", "revision", "tecnicas", "estancia"];
   const starBlock = starBlocks.includes(o.starBlock as ProposalStarBlock) ? (o.starBlock as ProposalStarBlock) : "revision";
   return {
+    modalidad,
     drNombre: o.drNombre.trim(),
     drNombreArt: typeof o.drNombreArt === "string" && o.drNombreArt.trim() ? o.drNombreArt.trim() : o.drNombre.trim(),
     heroLead1: typeof o.heroLead1 === "string" ? o.heroLead1.trim() : "",

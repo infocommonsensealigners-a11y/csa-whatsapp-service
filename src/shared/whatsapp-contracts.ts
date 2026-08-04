@@ -57,6 +57,12 @@ export interface ChatSummary {
   lastMessagePreview: string | null;
   /** Mensajes entrantes posteriores a last_opened_at (contador LOCAL, no read-receipts). */
   unread: number;
+  /**
+   * El ÚLTIMO mensaje del chat lo escribieron ELLOS → está pendiente de
+   * contestar. Hecho crudo, sin ventana temporal: hasta cuándo se considera
+   * accionable lo decide quien lo pinta (el chip del teléfono usa 30 días).
+   */
+  pendingReply?: boolean;
   ignored: boolean;
   links: ChatLeadLink[];
   approvedTags: TagRef[];

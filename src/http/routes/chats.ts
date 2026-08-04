@@ -21,6 +21,8 @@ interface ChatRow {
   last_message_preview: string | null;
   ignored: number;
   unread: number;
+  /** from_me del ÚLTIMO mensaje; null si el chat no tiene ninguno. */
+  last_from_me: number | null;
 }
 
 function toSummary(row: ChatRow): ChatSummary {
@@ -31,6 +33,8 @@ function toSummary(row: ChatRow): ChatSummary {
     lastMessageAt: row.last_message_at,
     lastMessagePreview: row.last_message_preview,
     unread: row.unread,
+    // Habló ELLA/ÉL el último → la pelota está en nuestro tejado.
+    pendingReply: row.last_from_me === 0,
     ignored: row.ignored === 1,
     links: [],
     approvedTags: [],
@@ -60,7 +64,13 @@ export function registerChatRoutes(app: FastifyInstance): void {
                 (SELECT COUNT(*) FROM messages m
                   WHERE m.chat_jid = c.jid AND m.from_me = 0
                     AND m.ts > MAX(COALESCE(c.last_opened_at, 0),
-                                   COALESCE(c.wa_read_at, 0))) AS unread
+                                   COALESCE(c.wa_read_at, 0))) AS unread,
+                -- PENDIENTE DE CONTESTAR: el último mensaje del chat lo escribió
+                -- ELLOS. Es un hecho crudo (barato: hay índice por chat_jid+ts);
+                -- decidir a partir de cuándo deja de ser accionable es cosa de
+                -- quien lo pinta, no de aquí.
+                (SELECT m2.from_me FROM messages m2
+                  WHERE m2.chat_jid = c.jid ORDER BY m2.ts DESC LIMIT 1) AS last_from_me
          FROM chats c ${where}
          ORDER BY c.last_message_at DESC
          LIMIT @limit OFFSET @offset`

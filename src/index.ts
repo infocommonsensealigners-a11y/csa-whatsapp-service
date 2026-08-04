@@ -19,10 +19,10 @@ async function main(): Promise<void> {
   openDb();
   registerIngest();
 
-  // Siembra ÚNICA del estado de lectura: da por leído el historial viejo para
-  // que el badge de no leídos deje de contar años de conversaciones ya
-  // trabajadas en WhatsApp. A partir de aquí manda el estado real que WhatsApp
-  // sincroniza entre dispositivos (ver src/wa/readState.ts).
+  // Línea base ÚNICA del estado de lectura: pone a cero los globos de no leídos
+  // (contaban años de historial porque nadie había abierto esos chats AQUÍ) para
+  // que a partir de este momento reflejen el WhatsApp real, que es lo único que
+  // los hace fiables (ver src/wa/readState.ts).
   seedHistoricalRead();
 
   // Credencial de Claude para Fransua: si no hay token/API key en el entorno,

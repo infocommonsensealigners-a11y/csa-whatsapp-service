@@ -30,14 +30,7 @@
 import { getDb, getMeta, setMeta } from "../db/db";
 
 /** Marca de "ya sembramos el histórico" para que la siembra corra UNA sola vez. */
-const SEED_META_KEY = "wa_read_seed_v1";
-
-/**
- * Antigüedad a partir de la cual un chat existente se da por leído en la siembra
- * inicial. Todo lo anterior a esto es historial que Fran YA trabajó en WhatsApp;
- * la última semana se deja intacta para que la resuelva el estado real.
- */
-const SEED_CUTOFF_DIAS = 7;
+const SEED_META_KEY = "wa_read_seed_v2";
 
 /**
  * Escribe la marca de agua a partir del `unreadCount` que reporta WhatsApp.
@@ -90,32 +83,40 @@ export function applyWaRead(jid: string, unreadCount: number | null | undefined)
 }
 
 /**
- * SIEMBRA ÚNICA del histórico. Sin esto, el arreglo no se notaría: WhatsApp solo
- * manda `chats.update` de los chats que CAMBIAN, así que los cientos de chats
- * viejos se quedarían con su badge inflado para siempre.
+ * LÍNEA BASE ÚNICA: da por leído TODO lo que hay guardado hasta este momento.
+ * A partir de aquí, el globo cuenta de verdad.
  *
- * Da por leído todo chat cuyo último mensaje tenga más de `SEED_CUTOFF_DIAS`
- * días. Es cierto en la práctica (son conversaciones ya trabajadas en WhatsApp)
- * y deja la última semana sin tocar para que mande el estado real.
+ * POR QUÉ TAN RADICAL (medido en producción, no supuesto): la primera versión
+ * solo sembraba lo de más de 7 días y dejó 53 chats recientes con 2.312 globos
+ * falsos — incluidos los 648 de un chat. La idea era que WhatsApp corrigiera
+ * esos al reconectar, pero los logs demostraron que NO lo hace: al reconectar
+ * con credenciales ya emparejadas no reenvía la lista de chats con su
+ * `unreadCount` (cero `messaging-history.set`), solo avisa de los chats que
+ * CAMBIAN a partir de ese momento. Resultado: esos globos se habrían quedado
+ * inflados para siempre.
+ *
+ * No se pierde información real: esas cifras NUNCA midieron nada: contaban
+ * mensajes entrantes desde una fecha ("abierto en el teléfono flotante") que
+ * para casi todos los chats no existía. Se cambia una cifra sin significado por
+ * un punto de partida limpio. Si un chat tenía algo pendiente de verdad, sigue
+ * estando en el WhatsApp de Fran y el globo reaparecerá con el próximo mensaje.
  */
 export function seedHistoricalRead(): void {
   try {
     if (getMeta(SEED_META_KEY)) return;
-    const corte = Math.floor(Date.now() / 1000) - SEED_CUTOFF_DIAS * 86_400;
     const res = getDb()
       .prepare(
         `UPDATE chats SET wa_read_at = last_message_at
           WHERE last_message_at IS NOT NULL
-            AND last_message_at < ?
             AND COALESCE(wa_read_at, 0) < last_message_at`
       )
-      .run(corte);
+      .run();
     setMeta(SEED_META_KEY, String(Math.floor(Date.now() / 1000)));
     console.log(
-      `[read-state] siembra inicial: ${res.changes} chats con más de ${SEED_CUTOFF_DIAS} días ` +
-        "dados por leídos (el estado real de WhatsApp manda a partir de ahora)."
+      `[read-state] línea base: ${res.changes} chats puestos a cero. ` +
+        "Desde ahora el globo verde refleja el estado real de WhatsApp."
     );
   } catch (e) {
-    console.error("[read-state] siembra inicial falló:", (e as Error).message);
+    console.error("[read-state] línea base falló:", (e as Error).message);
   }
 }

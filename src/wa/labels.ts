@@ -72,6 +72,12 @@ export function labelsOfChat(jid: string): WaLabelRow[] {
  * etiqueta se creó en el móvil después del último emparejamiento, aquí no
  * existe. Es una operación de LECTURA (Baileys hace lo mismo al conectar); se
  * dispara a mano desde el menú de etiquetas, no en bucle.
+ *
+ * EFECTO SECUNDARIO ÚTIL: esa misma sincronización arrastra los cambios de
+ * estado de los chats, así que también refresca los NO LEÍDOS reales (ver
+ * src/wa/readState.ts). Por eso el botón del menú se llama "Sincronizar con el
+ * móvil" y no solo "traer etiquetas": es la salida manual si algún globo verde
+ * se quedara desfasado.
  */
 export async function resyncLabels(): Promise<{ ok: boolean; error?: string; labels: number }> {
   const sock = getActiveSocket();

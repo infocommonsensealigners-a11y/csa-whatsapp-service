@@ -44,6 +44,9 @@ function migrate(d: Database.Database): void {
   // Columnas añadidas después de v1: idempotente (guardado por table_info), así
   // sirve tanto para BDs nuevas (ya vienen en schema.sql) como existentes.
   ensureColumn(d, "chats", "backfill_status", "TEXT");
+  // Marca de agua del estado de lectura REAL de WhatsApp (ver src/wa/readState.ts):
+  // todo entrante con ts <= wa_read_at ya está leído en el móvil/WhatsApp Web.
+  ensureColumn(d, "chats", "wa_read_at", "INTEGER");
 
   // Tablas añadidas post-v1 (etiquetas de WhatsApp): crear SIEMPRE, idempotente.
   // El schema.sql solo se aplica a BDs nuevas (current < 1); las existentes

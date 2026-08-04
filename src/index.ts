@@ -7,6 +7,7 @@ import { openDb } from "./db/db";
 import { startHttpServer } from "./http/server";
 import { emitSse } from "./http/sse";
 import { registerIngest } from "./wa/ingest";
+import { seedHistoricalRead } from "./wa/readState";
 import { startWhatsapp, stopWhatsapp, onStateChange } from "./wa/socket";
 import { ensureClaudeAuth } from "./brain/secrets";
 import { startLeadLinkingScheduler } from "./brain/linkLeadsScheduler";
@@ -17,6 +18,12 @@ async function main(): Promise<void> {
   ensureDataDirs();
   openDb();
   registerIngest();
+
+  // Siembra ÚNICA del estado de lectura: da por leído el historial viejo para
+  // que el badge de no leídos deje de contar años de conversaciones ya
+  // trabajadas en WhatsApp. A partir de aquí manda el estado real que WhatsApp
+  // sincroniza entre dispositivos (ver src/wa/readState.ts).
+  seedHistoricalRead();
 
   // Credencial de Claude para Fransua: si no hay token/API key en el entorno,
   // intenta cargar el token de SUSCRIPCIÓN desde Supabase (gratis, sin coste de

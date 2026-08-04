@@ -53,9 +53,14 @@ export function registerChatRoutes(app: FastifyInstance): void {
     const rows = db
       .prepare(
         `SELECT c.jid, c.phone, c.display_name, c.last_message_at, c.last_message_preview, c.ignored,
+                -- NO LEÍDOS: un mensaje solo cuenta si es posterior a AMBAS
+                -- marcas — la local (abrir el chat aquí) y la de WhatsApp
+                -- (leerlo en el móvil o en WhatsApp Web, ver src/wa/readState.ts).
+                -- Es decir: leído en cualquiera de los dos sitios = leído.
                 (SELECT COUNT(*) FROM messages m
                   WHERE m.chat_jid = c.jid AND m.from_me = 0
-                    AND m.ts > COALESCE(c.last_opened_at, 0)) AS unread
+                    AND m.ts > MAX(COALESCE(c.last_opened_at, 0),
+                                   COALESCE(c.wa_read_at, 0))) AS unread
          FROM chats c ${where}
          ORDER BY c.last_message_at DESC
          LIMIT @limit OFFSET @offset`

@@ -13,6 +13,7 @@ import { getDb, setMeta } from "../db/db";
 import { emitSse } from "../http/sse";
 import { isStorableChatJid, jidToPhone } from "./jidPhone";
 import { recordLidFromKey } from "./lidMap";
+import { applyWaRead } from "./readState";
 import { onWaEvent } from "./socket";
 import { analyzeChat } from "../brain/analyzeChat";
 
@@ -202,6 +203,11 @@ function ingestChatShells(chats: Chat[]): number {
     }
   });
   run(chats);
+  // El estado de lectura se aplica FUERA de la transacción de shells: hace sus
+  // propias consultas por chat y no debe alargar el lock de escritura.
+  for (const chat of chats) {
+    if (chat?.id && isStorableChatJid(chat.id)) applyWaRead(chat.id, chat.unreadCount);
+  }
   return n;
 }
 
@@ -341,6 +347,28 @@ export function registerIngest(): void {
 
   onWaEvent("contacts.upsert", (contacts) => applyContactNames(contacts, false));
   onWaEvent("contacts.update", (contacts) => applyContactNames(contacts, true));
+
+  // ESTADO DE LECTURA REAL (petición del usuario 2026-08-01). WhatsApp sincroniza
+  // su `unreadCount` entre dispositivos: cuando Fran abre un chat en el móvil o
+  // en WhatsApp Web, llega aquí un `chats.update` con unreadCount 0. Lo
+  // traducimos a la marca de agua `wa_read_at` (ver src/wa/readState.ts) para
+  // que el globo verde del teléfono flotante se apague igual que allí.
+  const aplicarLectura = (updates: Array<{ id?: string | null; unreadCount?: number | null }>) => {
+    try {
+      const tocados: string[] = [];
+      for (const u of updates) {
+        const jid = u?.id;
+        if (!jid || !isStorableChatJid(jid)) continue;
+        if (applyWaRead(jid, u.unreadCount)) tocados.push(jid);
+      }
+      // Solo se avisa a la interfaz si el contador ha cambiado de verdad.
+      for (const jid of tocados) emitSse({ type: "chat.updated", jid });
+    } catch (err) {
+      console.error("[ingest] estado de lectura:", (err as Error).message);
+    }
+  };
+  onWaEvent("chats.update", (updates) => aplicarLectura(updates as Array<Partial<Chat>>));
+  onWaEvent("chats.upsert", (chats) => aplicarLectura(chats as Array<Partial<Chat>>));
 
   // ETIQUETAS de WhatsApp Business — sentido WHATSAPP → AQUÍ (la escritura en
   // sentido contrario vive en src/wa/labels.ts, el único fichero autorizado).

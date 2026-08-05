@@ -20,6 +20,7 @@ import { logUsage } from "../brain/usage";
 import { suggestModel } from "./agent";
 import { getLeadContext360 } from "../brain/leadContext";
 import { getBusinessSnapshot } from "../brain/businessSnapshot";
+import { getObjeciones } from "../brain/objeciones";
 import { getSupabase, brainConfigured } from "../brain/supabase";
 import { createAgendaEvent } from "../brain/agenda";
 import { insertConPhone } from "../brain/phoneColumn";
@@ -358,6 +359,38 @@ const consultarAgenda = tool(
   }
 );
 
+/**
+ * OBJECIONES DE LOS DOCTORES — lo que dicen de verdad en WhatsApp y en las
+ * llamadas, agrupado por la resistencia de fondo y con citas literales.
+ *
+ * El análisis del histórico completo (719 conversaciones + 20 transcripciones)
+ * se hizo FUERA del chat: no cabe en un turno. Esta tool sirve esa foto ya
+ * destilada, así que responde en un segundo y siempre con cifras reales.
+ */
+const objecionesDoctores = tool(
+  "objeciones_doctores",
+  "Las objeciones REALES de los doctores extraídas de TODO el histórico: 719 conversaciones de WhatsApp y 20 transcripciones de llamadas de venta. Trae el ranking por frecuencia, cuántos doctores distintas la ponen, las formas distintas de decir la misma objeción, citas literales verificadas, cuántas quedaron sin resolver, y qué respuesta funciona. Úsala SIEMPRE que pregunten por objeciones, pegas, dudas, frenos, excusas o motivos de rechazo de los doctores — y también si preguntan qué se dice en las conversaciones o en las llamadas sobre por qué no compran.",
+  {
+    sobre: z
+      .string()
+      .optional()
+      .describe(
+        "opcional: el tema concreto por el que preguntan (p.ej. 'precio', 'falta de tiempo', 'desplazamiento a Murcia'). Déjalo vacío para traer las 14 objeciones completas."
+      ),
+  },
+  async (args: { sobre?: string }) => {
+    const r = await getObjeciones(args.sobre ?? "");
+    if (!r) {
+      return txt(
+        "No he podido acceder al análisis de objeciones ahora mismo. No me lo invento: vuelve a preguntarme en un momento."
+      );
+    }
+    return txt(
+      `${r.texto}\n\nHay un INFORME COMPLETO en HTML (con todas las citas, el playbook por objeción y descarga en PDF) en ${r.informeUrl} — ofrécelo si la pregunta es amplia o si te piden algo presentable.`
+    );
+  }
+);
+
 /* -------------------------------------------------------------------------- */
 /* Herramientas de ESCRITURA (por petición: cierran sobre el ACTOR real)      */
 /* -------------------------------------------------------------------------- */
@@ -540,6 +573,7 @@ const READ_TOOL_NAMES = [
   "mcp__fransua__conversacion_lead",
   "mcp__fransua__dormidos_reactivables",
   "mcp__fransua__consultar_agenda",
+  "mcp__fransua__objeciones_doctores",
 ];
 const WRITE_TOOL_NAMES = [
   "mcp__fransua__crear_evento_agenda",
@@ -564,7 +598,7 @@ export async function runAgent(prompt: string, model?: string, actor?: string): 
   const fransuaMcpServer = createSdkMcpServer({
     name: "fransua",
     version: "1.0.0",
-    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, ...writeTools],
+    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, ...writeTools],
   });
 
   const q = query({

@@ -9,6 +9,7 @@ import { registerStatusRoutes } from "./routes/status";
 import { registerChatRoutes } from "./routes/chats";
 import { registerAvatarRoutes } from "./routes/avatars";
 import { registerMediaRoutes } from "./routes/media";
+import { registerProgramaRoutes } from "./routes/programa";
 import { registerEventRoutes } from "./routes/events";
 import { registerBackfillRoutes } from "./routes/backfill";
 import { registerImportRoutes } from "./routes/import";
@@ -34,6 +35,7 @@ export async function startHttpServer(): Promise<FastifyInstance> {
   registerChatRoutes(app);
   registerAvatarRoutes(app);
   registerMediaRoutes(app); // GET /media/:jid/:id — fotos/audios/documentos ya descargados, con Range
+  registerProgramaRoutes(app); // GET /programa-enviado — a quién se le mandó el dossier del programa
   registerEventRoutes(app);
   registerBackfillRoutes(app);
   registerImportRoutes(app);

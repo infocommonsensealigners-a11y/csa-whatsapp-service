@@ -14,14 +14,18 @@ import { emitSse } from "../http/sse";
 import { isStorableChatJid, jidToPhone } from "./jidPhone";
 import { recordLidFromKey } from "./lidMap";
 import { applyWaRead } from "./readState";
-import { onWaEvent } from "./socket";
+import { onWaEvent, downloadMedia } from "./socket";
 import { analyzeChat } from "../brain/analyzeChat";
+import { saveMediaBuffer } from "./mediaStore";
 
 type MsgType = "text" | "image" | "audio" | "video" | "document" | "other";
 
 interface ExtractedContent {
   type: MsgType;
   text: string | null;
+  /** Solo en tipos de media: para poder descargar el binario después. */
+  mimetype?: string | null;
+  fileName?: string | null;
 }
 
 /** Desenvuelve wrappers (efímeros, view-once) y clasifica el contenido. */
@@ -37,11 +41,22 @@ function extractContent(msg: WAMessage): ExtractedContent | null {
 
   if (inner.conversation) return { type: "text", text: inner.conversation };
   if (inner.extendedTextMessage?.text) return { type: "text", text: inner.extendedTextMessage.text };
-  if (inner.imageMessage) return { type: "image", text: inner.imageMessage.caption ?? null };
-  if (inner.videoMessage) return { type: "video", text: inner.videoMessage.caption ?? null };
-  if (inner.audioMessage) return { type: "audio", text: null };
+  if (inner.imageMessage) {
+    return { type: "image", text: inner.imageMessage.caption ?? null, mimetype: inner.imageMessage.mimetype ?? null };
+  }
+  if (inner.videoMessage) {
+    return { type: "video", text: inner.videoMessage.caption ?? null, mimetype: inner.videoMessage.mimetype ?? null };
+  }
+  if (inner.audioMessage) {
+    return { type: "audio", text: null, mimetype: inner.audioMessage.mimetype ?? null };
+  }
   if (inner.documentMessage) {
-    return { type: "document", text: inner.documentMessage.caption ?? inner.documentMessage.fileName ?? null };
+    return {
+      type: "document",
+      text: inner.documentMessage.caption ?? inner.documentMessage.fileName ?? null,
+      mimetype: inner.documentMessage.mimetype ?? null,
+      fileName: inner.documentMessage.fileName ?? null,
+    };
   }
   if (inner.stickerMessage) return { type: "other", text: null };
   // Plumbing del protocolo (reacciones, borrados, claves…): no es contenido.
@@ -122,13 +137,26 @@ interface IngestResult {
    *  pero antes no se emitía ningún evento y la UI no se enteraba hasta el
    *  poll de 45s (auditoría realtime 2026-07-29). */
   seen: Set<string>;
+  /** Mensajes de media recién insertados, para descargar el binario DESPUÉS de
+   *  la transacción (I/O de red; no puede vivir dentro de un db.transaction
+   *  síncrono). Solo se rellena si `fetchMedia` (ver más abajo). */
+  mediaCandidates: Array<{ jid: string; id: string; msg: WAMessage; mimetype: string | null; fileName: string | null }>;
 }
 
-function ingestMessages(messages: WAMessage[]): IngestResult {
+/**
+ * `fetchMedia`: recolecta candidatos para descargar el binario. Se activa SOLO
+ * para mensajes EN VIVO (`messages.upsert` tipo "notify"), nunca para el
+ * history-sync masivo al reconectar — descargar cientos de adjuntos de golpe
+ * saturaría el CDN de WhatsApp para nada: el histórico ya carece de las claves
+ * necesarias en su inmensa mayoría (auditoría 2026-08-06), así que el intento
+ * fallaría casi siempre y solo el tráfico en vivo importa de verdad.
+ */
+function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean }): IngestResult {
   const db = getDb();
   const stmts = statements();
   const touched = new Set<string>();
   const seen = new Set<string>();
+  const mediaCandidates: IngestResult["mediaCandidates"] = [];
   const now = Math.floor(Date.now() / 1000);
   /** jid `@lid` → teléfono que venía en key.senderPn (se aplica tras la transacción). */
   const lidPending = new Map<string, string>();
@@ -142,6 +170,7 @@ function ingestMessages(messages: WAMessage[]): IngestResult {
 
       const ts = tsOf(msg.messageTimestamp);
       const preview = previewOf(content);
+      const id = msg.key.id ?? `${ts}-${Math.random().toString(36).slice(2)}`;
       seen.add(jid);
       stmts.upsertChat.run({
         jid,
@@ -153,14 +182,19 @@ function ingestMessages(messages: WAMessage[]): IngestResult {
       });
       const inserted = stmts.upsertMessage.run({
         chat_jid: jid,
-        id: msg.key.id ?? `${ts}-${Math.random().toString(36).slice(2)}`,
+        id,
         from_me: msg.key.fromMe ? 1 : 0,
         ts,
         type: content.type,
         text: content.text,
         raw_json: JSON.stringify(msg),
       });
-      if (inserted.changes > 0) touched.add(jid);
+      if (inserted.changes > 0) {
+        touched.add(jid);
+        if (opts?.fetchMedia && content.type !== "text" && content.type !== "other") {
+          mediaCandidates.push({ jid, id, msg, mimetype: content.mimetype ?? null, fileName: content.fileName ?? null });
+        }
+      }
       // Chats `@lid`: el JID no lleva el número, pero Baileys nos da el teléfono
       // real en key.senderPn → se materializa el mapeo y se rellena chats.phone
       // (solo si estaba vacío), para poder casarlos con el CRM por teléfono.
@@ -171,7 +205,33 @@ function ingestMessages(messages: WAMessage[]): IngestResult {
   run(messages);
   // Fuera de la transacción de mensajes (recordLidFromKey abre las suyas).
   for (const [jid, pn] of lidPending) recordLidFromKey(jid, pn);
-  return { touched, seen };
+  return { touched, seen, mediaCandidates };
+}
+
+/**
+ * Descarga el binario de cada candidato y actualiza `media_path`/`media_mime`.
+ * Secuencial a propósito (no Promise.all): una ráfaga de fotos no debe abrir N
+ * descargas simultáneas contra el socket de Baileys. Cada fallo se aísla — una
+ * foto que no baja no debe impedir que las demás sí lo hagan.
+ */
+async function downloadAndAttachMedia(candidates: IngestResult["mediaCandidates"]): Promise<Set<string>> {
+  if (!candidates.length) return new Set();
+  const db = getDb();
+  const update = db.prepare(`UPDATE messages SET media_path = ?, media_mime = ? WHERE chat_jid = ? AND id = ?`);
+  const listos = new Set<string>();
+  for (const c of candidates) {
+    try {
+      const buf = await downloadMedia(c.msg);
+      const file = saveMediaBuffer(c.jid, c.id, c.mimetype, buf, c.fileName);
+      if (file) {
+        update.run(file, c.mimetype, c.jid, c.id);
+        listos.add(c.jid);
+      }
+    } catch (e) {
+      console.error(`[media] descarga falló ${c.jid}/${c.id}:`, (e as Error).message);
+    }
+  }
+  return listos;
 }
 
 /** Crea filas de chat "vacías" a partir del listado del history-sync, aunque
@@ -276,7 +336,9 @@ export function registerIngest(): void {
   onWaEvent("messages.upsert", ({ messages, type }) => {
     if (type !== "notify" && type !== "append") return;
     try {
-      const result = ingestMessages(messages);
+      // Descarga de media SOLO en tráfico "notify" (en vivo, ver comentario de
+      // ingestMessages): así una foto/audio recién llegado se guarda al vuelo.
+      const result = ingestMessages(messages, { fetchMedia: type === "notify" });
       console.log(
         `[ingest] upsert type=${type} recibidos=${messages.length} guardados=${result.touched.size}` +
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")
@@ -292,6 +354,14 @@ export function registerIngest(): void {
         }
         // Fransua EN DIRECTO: solo mensajes nuevos reales, no el backfill.
         for (const jid of result.touched) scheduleLiveAnalyze(jid);
+      }
+      // Descarga fuera de la ruta síncrona (I/O de red): cuando termine cada
+      // fichero, un segundo `message.new` hace que la burbuja pase de "etiqueta
+      // gris" a la foto/audio real sin que el usuario recargue nada.
+      if (result.mediaCandidates.length) {
+        void downloadAndAttachMedia(result.mediaCandidates).then((listos) => {
+          for (const jid of listos) emitSse({ type: "message.new", jid });
+        });
       }
     } catch (err) {
       console.error("[ingest] error procesando upsert:", (err as Error).message);

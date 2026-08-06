@@ -8,6 +8,7 @@ import { config } from "../config";
 import { registerStatusRoutes } from "./routes/status";
 import { registerChatRoutes } from "./routes/chats";
 import { registerAvatarRoutes } from "./routes/avatars";
+import { registerMediaRoutes } from "./routes/media";
 import { registerEventRoutes } from "./routes/events";
 import { registerBackfillRoutes } from "./routes/backfill";
 import { registerImportRoutes } from "./routes/import";
@@ -32,6 +33,7 @@ export async function startHttpServer(): Promise<FastifyInstance> {
   registerStatusRoutes(app);
   registerChatRoutes(app);
   registerAvatarRoutes(app);
+  registerMediaRoutes(app); // GET /media/:jid/:id — fotos/audios/documentos ya descargados, con Range
   registerEventRoutes(app);
   registerBackfillRoutes(app);
   registerImportRoutes(app);
@@ -48,7 +50,8 @@ export async function startHttpServer(): Promise<FastifyInstance> {
   registerMarketingRoutes(app); // /intel/marketing-ask — resucita la barra de Inversión
   registerSendRoutes(app); // /chats/:jid/send — respuesta MANUAL desde el teléfono flotante
   registerLabelRoutes(app); // /labels y /chats/:jid/labels — etiquetas BIDIRECCIONALES
-  // Pendiente F1: media de mensajes + links/matcher. F2: tags/artifacts/jobs.
+  // F1 (media de mensajes) cerrada 2026-08-06: descarga en vivo + servido con
+  // Range + envío de adjuntos/notas de voz. Pendiente F2: tags/artifacts/jobs.
 
   await app.listen({ host: config.host, port: config.port });
   return app;

@@ -31,6 +31,7 @@ import { getEstrategiaCSA } from "../../brain/estrategia";
 import { runAgent, agentModel } from "../../ai/agentTools";
 import { runLearning } from "../../brain/learning";
 import { getLeccionesTexto, extractAndStoreLessons, listLecciones, storeLeccion } from "../../brain/lecciones";
+import { getInformesTexto } from "../../brain/informesCatalogo";
 import { logPregunta, listPreguntas } from "../../brain/preguntas";
 import { learnAgendaPlaybook, proposeAgendaEvents, getAgendaPlaybook, getStoredProposals } from "../../brain/agendaPlaybook";
 import type { FastifyRequest } from "fastify";
@@ -449,11 +450,17 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     // cifras; y el plan directamente no llegaba al chat (solo a /intel/ask).
     // Ambos vienen cacheados (2 min / el plan con su propia caché) y null-safe:
     // si fallan, el prompt simplemente no lleva ese bloque.
-    const [estrategia, lecciones, retrato, plan] = await Promise.all([
+    // `informes` = índice de los análisis del histórico ya producidos (el cerebro
+    // de Fransua). Va pre-inyectado por la misma razón que el retrato: si solo
+    // vive dentro de una herramienta, Fransua no sabe que existe hasta que la
+    // pregunta usa las palabras justas, y una producción de 719 conversaciones
+    // se quedaba sin ofrecerse.
+    const [estrategia, lecciones, retrato, plan, informes] = await Promise.all([
       getEstrategiaCSA().catch(() => ""),
       getLeccionesTexto().catch(() => ""),
       getBusinessSnapshot().catch(() => null),
       getPlanContext().then((p) => p.texto).catch(() => null),
+      getInformesTexto().catch(() => ""),
     ]);
     const ahora = new Date();
     const off = madridOffset(ahora);
@@ -577,6 +584,8 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       'una factura concreta añade "facturaNumero":"<nº>"). Ejemplos: renovaciones → {"tab":"rendimiento","segView":"renovaciones"};',
       'email marketing → {"tab":"marketing","marketingView":"email"}; rendimiento de llamadas → {"tab":"conectores","conectorView":"rendimiento"};',
       'gastos → {"tab":"financiero","finView":"gastos"}. Nunca la combines con [[VISTA_CRM]] en la misma respuesta.',
+      "",
+      informes,
       "",
       lecciones,
       "",

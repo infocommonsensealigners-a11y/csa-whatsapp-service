@@ -130,11 +130,24 @@ export function registerAdminRoutes(app: FastifyInstance): void {
    * va en una única transacción (si algo falla, no se toca nada).
    */
   app.post("/admin/merge-lid-chats", async (request, reply) => {
-    const body = request.body as { token?: string; dryRun?: boolean } | null;
+    const body = request.body as { token?: string; dryRun?: boolean; soloVacios?: boolean } | null;
     const q = request.query as { t?: string } | undefined;
     const provided = String(body?.token ?? q?.t ?? request.headers["x-wa-admin"] ?? "");
     if (provided !== TOKEN) return reply.status(401).send({ ok: false, error: "token inválido" });
     const dryRun = body?.dryRun !== false;
+    /**
+     * `soloVacios` (decisión del usuario, 06-08-2026): fusiona SOLO los pares
+     * cuya fila hermana no tiene ningún mensaje. Son duplicados nacidos de
+     * vincular un lead (fila creada, conversación vacía), así que limpiarlos no
+     * mueve ni un mensaje de histórico: se queda el chat que tiene la
+     * conversación y se le pasa el vínculo al CRM de la fila vacía.
+     *
+     * Por qué existe esta opción: el barrido completo detectó 37 pares y 2.347
+     * mensajes a mover, y mover histórico real es irreversible. Con el cliente
+     * ya unificando gemelos por teléfono, esa parte no aporta nada funcional y
+     * no merece el riesgo.
+     */
+    const soloVacios = body?.soloVacios === true;
     try {
       const { duplicados } = backfillLidPhones();
       const db = getDb();
@@ -155,11 +168,13 @@ export function registerAdminRoutes(app: FastifyInstance): void {
         const mensajesAMover = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE chat_jid = ?").get(loser.jid) as { n: number }).n;
         const linksAMover = (db.prepare("SELECT COUNT(*) AS n FROM chat_lead_links WHERE chat_jid = ? AND status = 'active'").get(loser.jid) as { n: number }).n;
         return { lid: d.lid, pn: d.pn, phone: d.phone, canonical: canonical.jid, loser: loser.jid, mensajesAMover, linksAMover };
-      }).filter((p): p is NonNullable<typeof p> => p !== null);
+      })
+        .filter((p): p is NonNullable<typeof p> => p !== null)
+        .filter((p) => !soloVacios || p.mensajesAMover === 0);
 
       if (dryRun) {
         return {
-          ok: true, dryRun: true, pares: plan.length,
+          ok: true, dryRun: true, soloVacios, pares: plan.length,
           totalMensajes: plan.reduce((s, p) => s + p.mensajesAMover, 0),
           plan,
         };

@@ -19,7 +19,7 @@
  * exclusiones se evalúen ANTES que las inclusiones.
  */
 
-export type ProgramaKey = "sba" | "certificacion" | "estancia";
+export type ProgramaKey = "sba" | "certificacion" | "estancia" | "pei" | "obc";
 
 export type ProgramasEnviados = Record<ProgramaKey, boolean>;
 
@@ -64,6 +64,16 @@ const EXCLUSIONES: Array<{ re: RegExp; motivo: string }> = [
  * qué producto son, así que NO cuentan (mejor no marcar que marcar de más).
  */
 const PATRONES: Array<{ key: ProgramaKey; re: RegExp }> = [
+  // ⚠️ EL ORDEN IMPORTA: gana el primero que casa, así que los nombres de
+  // producto MÁS ESPECÍFICOS van antes que los genéricos.
+
+  // PEI — las tres ediciones (PEI, PEI II, PEI III) comparten un solo icono
+  // (decisión del usuario). Va ANTES que la certificación a propósito:
+  // "Certificación PEI III.pdf" es de la familia PEI, no de la Certificación
+  // Invisalign actual. Programa histórico: 2023-06 → 2024-02, 49 envíos.
+  { key: "pei", re: /\bPEI\b/ },
+  // OBC — "SISTEMA OBC.pdf", producto puntual de 2025-07 a 2025-09 (16 envíos).
+  { key: "obc", re: /\bOBC\b/ },
   // "SBA" a secas es el envío más frecuente del histórico (342 veces), y también
   // "SBA PROGRAMA", "CONTENIDO PROGRAMA SBA", "SBA Programa.pdf.pdf"…
   { key: "sba", re: /\bSBA\b/ },
@@ -76,7 +86,7 @@ const PATRONES: Array<{ key: ProgramaKey; re: RegExp }> = [
 ];
 
 export function vacio(): ProgramasEnviados {
-  return { sba: false, certificacion: false, estancia: false };
+  return { sba: false, certificacion: false, estancia: false, pei: false, obc: false };
 }
 
 /**
@@ -106,5 +116,5 @@ export function programasDeDocumentos(textos: Array<string | null>): ProgramasEn
 }
 
 export function algunoEnviado(p: ProgramasEnviados): boolean {
-  return p.sba || p.certificacion || p.estancia;
+  return p.sba || p.certificacion || p.estancia || p.pei || p.obc;
 }

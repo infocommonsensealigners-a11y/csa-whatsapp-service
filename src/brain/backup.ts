@@ -64,7 +64,7 @@ async function pruneOld(): Promise<void> {
 
 export interface SidecarBackupResult {
   ok: boolean;
-  skipped?: "disabled" | "already-today";
+  skipped?: "disabled" | "already-today" | "peor-que-el-existente";
   bytes?: number;
   bytesRaw?: number;
   path?: string;
@@ -118,6 +118,48 @@ async function backupAuth(day: string): Promise<NonNullable<SidecarBackupResult[
   }
 }
 
+/** Marca que acompaña a cada backup: hasta dónde llegan sus datos. */
+interface MarcaBackup {
+  /** Epoch (s) del mensaje más nuevo que contiene esa copia. 0 si está vacía. */
+  ultimoMensajeTs: number;
+  subidoEn: string;
+  bytes: number;
+}
+
+/** Mensaje más nuevo de NUESTRA base: la vara de medir cómo de buena es la copia. */
+function ultimoMensajeTs(): number {
+  try {
+    const r = getDb().prepare("SELECT MAX(ts) AS t FROM messages").get() as { t: number | null };
+    return r?.t ?? 0;
+  } catch {
+    return 0; // sin tabla o base recién creada: la copia más pobre posible
+  }
+}
+
+/** Lee la marca del backup ya subido hoy. `null` si no hay o no se puede leer. */
+async function leerMarca(objPath: string): Promise<MarcaBackup | null> {
+  try {
+    const { data, error } = await getSupabase().storage.from(BUCKET).download(objPath);
+    if (error || !data) return null;
+    const j = JSON.parse(await data.text()) as MarcaBackup;
+    return typeof j?.ultimoMensajeTs === "number" ? j : null;
+  } catch {
+    // Sin marca no se bloquea el backup: es preferible subir a no tener nada.
+    return null;
+  }
+}
+
+async function escribirMarca(objPath: string, marca: MarcaBackup): Promise<void> {
+  try {
+    await getSupabase().storage.from(BUCKET).upload(objPath, Buffer.from(JSON.stringify(marca)), {
+      contentType: "application/json",
+      upsert: true,
+    });
+  } catch {
+    /* la marca es una ayuda, no una condición: si falla, el backup ya está subido */
+  }
+}
+
 /** Ejecuta el backup del SQLite. `force` ignora la marca diaria. Nunca lanza. */
 export async function runSidecarBackup(force = false): Promise<SidecarBackupResult> {
   if (!brainConfigured()) return { ok: false, skipped: "disabled" };
@@ -133,12 +175,46 @@ export async function runSidecarBackup(force = false): Promise<SidecarBackupResu
     const raw = readFileSync(tmp);
     const gz = gzipSync(raw);
 
+    /**
+     * ⚠️ NO PISAR UN BACKUP MEJOR CON UNO PEOR (detectado 2026-08-07).
+     *
+     * El backup del día se subía con `upsert: true`, así que el ÚLTIMO
+     * contenedor que corriera se quedaba con el objeto. Y aquí no corre un solo
+     * contenedor: el repo despliega en dos proyectos de Railway, y basta con que
+     * uno tenga un volumen viejo o Baileys sin emparejar para que suba su copia
+     * anémica encima de la buena. Resultado real: los backups del 28-07 al 07-08
+     * eran todos la MISMA base congelada el 28-07 a las 07:19 — diez días de
+     * respaldo inservible sin que nadie se enterara, porque el fichero existía y
+     * pesaba lo normal.
+     *
+     * El árbitro es el MENSAJE MÁS NUEVO de la base: un backup solo sustituye al
+     * del día si trae datos más recientes. Es el criterio correcto porque mide lo
+     * que de verdad importa (cuánta conversación conserva), no el tamaño ni la
+     * hora de subida. Se sube aparte una marca `.meta.json` legible con ese dato.
+     */
+    const nuestroUltimoTs = ultimoMensajeTs();
     const objPath = `${PREFIX}/${day}-wa.sqlite3.gz`;
+    const metaPath = `${PREFIX}/${day}-wa.meta.json`;
+    const previo = await leerMarca(metaPath);
+    if (previo && previo.ultimoMensajeTs > nuestroUltimoTs) {
+      const dias = Math.round((previo.ultimoMensajeTs - nuestroUltimoTs) / 86400);
+      console.warn(
+        `[backup-sidecar] NO se sube: el backup de hoy ya tiene datos más nuevos ` +
+          `(${new Date(previo.ultimoMensajeTs * 1000).toISOString()} vs los nuestros ` +
+          `${new Date(nuestroUltimoTs * 1000).toISOString()}, ${dias} días). ` +
+          `Este contenedor tiene una copia PEOR de la base — probablemente es el ` +
+          `proyecto duplicado o un volumen sin emparejar.`
+      );
+      setMeta(META_KEY, day); // no reintentar en bucle el resto del día
+      return { ok: true, skipped: "peor-que-el-existente" };
+    }
+
     const { error } = await getSupabase().storage.from(BUCKET).upload(objPath, gz, {
       contentType: "application/gzip",
       upsert: true,
     });
     if (error) throw new Error(error.message);
+    await escribirMarca(metaPath, { ultimoMensajeTs: nuestroUltimoTs, subidoEn: new Date().toISOString(), bytes: gz.length });
 
     // Emparejamiento de Baileys (para no tener que re-escanear el QR).
     const auth = await backupAuth(day);

@@ -35,7 +35,7 @@ export async function startHttpServer(): Promise<FastifyInstance> {
   registerStatusRoutes(app);
   registerChatRoutes(app);
   registerAvatarRoutes(app);
-  registerMediaRoutes(app); // GET /media/:jid/:id — fotos/audios/documentos ya descargados, con Range
+  registerMediaRoutes(app); // GET /media/:jid/:id (con Range) + POST /media/:jid/:id/fetch (descarga bajo demanda)
   registerProgramaRoutes(app); // GET /programa-enviado — a quién se le mandó el dossier del programa
   registerContenidoDetectadoRoutes(app); // GET /contenido-detectado — a quién se le pasó cada contenido gratuito (por su enlace)
   registerEventRoutes(app);

@@ -51,8 +51,38 @@ export function registerChatRoutes(app: FastifyInstance): void {
     const search = (q.query ?? "").trim();
 
     const db = getDb();
+    /**
+     * BUSCAR POR LO QUE LA PERSONA SABE, no por lo que WhatsApp guardó.
+     *
+     * Hasta 2026-08-07 solo se miraba `display_name` y `phone` del chat, y eso
+     * dejaba invisibles casos reales: hay 153 chats sin teléfono (84 de ellos
+     * `@lid`, los de "número oculto"), y su nombre en WhatsApp puede ser un
+     * número pelado como "34645643911". Buscar "Isabel Gallego" —el nombre que
+     * Fran ve en el CRM— no encontraba nada, y la conclusión razonable era
+     * "esta conversación no existe aquí".
+     *
+     * Ahora se busca además por:
+     *  - el nombre y el teléfono del LEAD en el directorio del CRM, atados al
+     *    chat por `chat_lead_links` (solo vínculos activos);
+     *  - la instantánea del nombre guardada en el propio vínculo, que sobrevive
+     *    aunque la fila del CRM se mueva o se borre;
+     *  - el teléfono real detrás de un `@lid` (`wa_lid_map`), para los que
+     *    todavía no se han volcado a `chats.phone`.
+     */
     const where = search
-      ? "WHERE c.ignored = 0 AND (c.display_name LIKE @like OR c.phone LIKE @like)"
+      ? `WHERE c.ignored = 0 AND (
+             c.display_name LIKE @like
+          OR c.phone LIKE @like
+          OR EXISTS (SELECT 1 FROM wa_lid_map lm
+                      WHERE lm.lid = c.jid AND (lm.phone LIKE @like OR lm.pn LIKE @like))
+          OR EXISTS (SELECT 1 FROM chat_lead_links cll
+                      LEFT JOIN lead_directory ld ON ld.source_row = cll.source_row
+                      WHERE cll.chat_jid = c.jid AND cll.status = 'active'
+                        AND (cll.lead_name_snapshot LIKE @like
+                          OR cll.phone_snapshot LIKE @like
+                          OR ld.name LIKE @like
+                          OR ld.phone LIKE @like))
+        )`
       : "WHERE c.ignored = 0";
     const rows = db
       .prepare(
@@ -104,6 +134,44 @@ export function registerChatRoutes(app: FastifyInstance): void {
     return { chats, total };
   });
 
+  /**
+   * GET /chats/index — el mapa TELÉFONO → conversación, para el CRM.
+   *
+   * Por qué existe (fallo reportado 2026-08-07): la columna WhatsApp del CRM
+   * resolvía a qué chat llevar mirando `chat_intel`, o sea el cerebro de
+   * Fransua. Pero el intel solo tiene lo que la IA ha ASIMILADO: un lead al que
+   * se le escribió una vez y no ha contestado no está ahí, así que la columna se
+   * quedaba muda aunque la conversación existiera y estuviera a un clic. El
+   * usuario lo dijo claro: "da igual que solo haya un mensaje y no nos haya
+   * contestado, siempre nos hipervincula a la conversación".
+   *
+   * Devuelve TODOS los chats (no los 500 del listado) pero solo tres campos, así
+   * que son ~60 KB para 1.400 conversaciones: cabe de sobra en una petición y el
+   * dashboard lo cachea.
+   *
+   * El teléfono sale de tres sitios, por orden: el del chat, el del mapa `@lid`
+   * (los "número oculto" traen el real en `key.senderPn`), y la instantánea del
+   * vínculo con el CRM. Y se devuelven también las filas del CRM enlazadas, para
+   * poder casar por fila cuando el teléfono esté escrito de otra forma.
+   */
+  app.get("/chats/index", async () => {
+    const filas = getDb()
+      .prepare(
+        `SELECT c.jid                                        AS jid,
+                COALESCE(NULLIF(c.phone,''), lm.phone, cll.phone_snapshot) AS phone,
+                c.last_message_at                            AS lastMessageAt,
+                cll.source_row                               AS sourceRow
+           FROM chats c
+           LEFT JOIN wa_lid_map lm ON lm.lid = c.jid
+           LEFT JOIN chat_lead_links cll
+                  ON cll.chat_jid = c.jid AND cll.status = 'active'
+          WHERE c.ignored = 0
+          ORDER BY c.last_message_at DESC`
+      )
+      .all() as Array<{ jid: string; phone: string | null; lastMessageAt: number | null; sourceRow: number | null }>;
+    return { chats: filas, total: filas.length };
+  });
+
   app.get("/chats/:jid/messages", async (request) => {
     const { jid } = request.params as { jid: string };
     const q = request.query as { beforeTs?: string; limit?: string };
@@ -112,7 +180,14 @@ export function registerChatRoutes(app: FastifyInstance): void {
 
     const rows = getDb()
       .prepare(
-        `SELECT id, chat_jid, from_me, ts, type, text, media_path
+        // `recuperable`: el mensaje conserva su raw_json, o sea las claves de
+        // descifrado → su binario SE PUEDE pedir a WhatsApp aunque nunca se
+        // descargara (POST /media/:jid/:id/fetch). Sin raw_json no hay nada que
+        // hacer y la interfaz debe decirlo en vez de ofrecer un botón muerto.
+        // Se devuelve como 0/1 y NO se manda el raw_json entero: son decenas de
+        // KB por mensaje y el navegador no los necesita para nada.
+        `SELECT id, chat_jid, from_me, ts, type, text, media_path,
+                CASE WHEN raw_json IS NOT NULL AND raw_json <> '' THEN 1 ELSE 0 END AS recuperable
          FROM messages
          WHERE chat_jid = ? AND ts < ?
          ORDER BY ts DESC
@@ -126,6 +201,7 @@ export function registerChatRoutes(app: FastifyInstance): void {
       type: WaMessage["type"];
       text: string | null;
       media_path: string | null;
+      recuperable: number;
     }>;
 
     const messages: WaMessage[] = rows.map((r) => ({
@@ -136,6 +212,7 @@ export function registerChatRoutes(app: FastifyInstance): void {
       type: r.type,
       text: r.text,
       mediaUrl: r.media_path ? `/api/whatsapp/media/${encodeURIComponent(r.chat_jid)}/${encodeURIComponent(r.id)}` : null,
+      recuperable: r.recuperable === 1,
     }));
     return { messages };
   });

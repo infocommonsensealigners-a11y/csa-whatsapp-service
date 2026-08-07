@@ -18,6 +18,7 @@ import { analyzeChat } from "../../brain/analyzeChat";
 import { getPlanContext } from "../../brain/plan";
 import { getEstrategiaCSA } from "../../brain/estrategia";
 import { getLeadContext360 } from "../../brain/leadContext";
+import { getIntelSnapshot, invalidateIntelCache } from "../../brain/intelCache";
 
 const STRATEGY_SINCE = "2025-04-01";
 // "Ghosting" (petición del usuario, 2026-07-24): nosotros escribimos últimos y el
@@ -27,6 +28,7 @@ const GHOSTING_MIN_DIAS = 7;
 const GHOSTING_MAX_DIAS = 30;
 const COLS =
   "jid,phone,display_name,source_row,producto,first_ts,last_ts,msg_count,from_me_count,temperatura,temperatura_motivo,resumen,intereses,intervalos,etiquetas,model,updated_at";
+
 
 function sinceToTs(since?: string): number {
   const d = since && /^\d{4}-\d{2}-\d{2}$/.test(since) ? since : STRATEGY_SINCE;
@@ -80,17 +82,16 @@ export function registerIntelRoutes(app: FastifyInstance): void {
     if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
     const since = (req.query as any)?.since as string | undefined;
     const sinceTs = sinceToTs(since);
-    const sb = getSupabase();
-
-    const { data, error } = await sb
-      .from("chat_intel")
-      .select(COLS)
-      .gte("last_ts", sinceTs)
-      .order("last_ts", { ascending: false })
-      .limit(2000);
-    if (error) return reply.status(502).send({ ok: false, error: error.message });
-
-    const rows = (data as IntelRow[]).map(enrich);
+    // Misma foto en memoria que /intel/list (ver brain/intelCache.ts): era la
+    // OTRA lectura de 2.000 filas contra Supabase, y ninguno de los recuentos de
+    // aquí usa `intereses`.
+    let cacheadas: IntelRow[];
+    try {
+      cacheadas = await getIntelSnapshot<IntelRow>();
+    } catch (e) {
+      return reply.status(502).send({ ok: false, error: (e as Error).message });
+    }
+    const rows = cacheadas.filter((r) => (r.last_ts ?? 0) >= sinceTs).map(enrich);
     const byTemp = { caliente: 0, templado: 0, frio: 0, sin_dato: 0 };
     for (const r of rows) {
       if (r.temperatura === "caliente") byTemp.caliente++;
@@ -179,6 +180,7 @@ export function registerIntelRoutes(app: FastifyInstance): void {
         if (!upErr) jidsEtiquetados.push(row.jid);
       }
     }
+    if (jidsEtiquetados.length) invalidateIntelCache(); // el listado se sirve de memoria
     // jidsEtiquetados = recién marcados (su resumen puede ser "de venta" viejo):
     // son los candidatos a re-análisis (scripts/sync-clientes-brain --reanalyze).
     return {
@@ -190,17 +192,30 @@ export function registerIntelRoutes(app: FastifyInstance): void {
     };
   });
 
+  /**
+   * LISTADO — servido desde la caché en memoria (ver brain/intelCache.ts).
+   *
+   * Antes, cada uno de los 7 componentes que lo piden abría su propia consulta a
+   * Supabase de ~1,9 MB en CADA carga de pestaña: 10,1 GB de egress al mes
+   * contra un límite de 5 GB. Ahora se lee UNA foto (la ventana completa de
+   * estrategia) y los filtros se aplican en memoria; la foto se invalida en
+   * cuanto alguien escribe en chat_intel, así que no se sirve nada viejo.
+   */
   app.get("/intel/list", async (req, reply) => {
     if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
     const q = req.query as any;
     const sinceTs = sinceToTs(q?.since);
     const limit = Math.min(Number(q?.limit) || 200, 2000);
-    const sb = getSupabase();
-    let query = sb.from("chat_intel").select(COLS).gte("last_ts", sinceTs).order("last_ts", { ascending: false }).limit(limit);
-    if (q?.temp) query = query.eq("temperatura", String(q.temp));
-    const { data, error } = await query;
-    if (error) return reply.status(502).send({ ok: false, error: error.message });
-    return { items: (data as IntelRow[]).map(enrich) };
+    try {
+      const rows = await getIntelSnapshot<IntelRow>();
+      const filtradas = rows
+        .filter((r) => (r.last_ts ?? 0) >= sinceTs)
+        .filter((r) => (q?.temp ? r.temperatura === String(q.temp) : true))
+        .slice(0, limit);
+      return { items: filtradas.map(enrich) };
+    } catch (e) {
+      return reply.status(502).send({ ok: false, error: (e as Error).message });
+    }
   });
 
   app.get("/intel/by-lead/:sourceRow", async (req, reply) => {

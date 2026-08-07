@@ -22,6 +22,7 @@
  * para no acoplar este módulo a la ruta (fichero compartido por varias sesiones).
  */
 import { getSupabase, brainConfigured } from "./supabase";
+import { getIntelSnapshot } from "./intelCache";
 import { runJson, suggestModel } from "../ai/agent";
 
 const learnModel = process.env.WA_AI_MODEL_ASK ?? suggestModel;
@@ -211,13 +212,9 @@ function esCliente(etiquetas: unknown): boolean {
 /** Los leads que HOY piden acción, con su fila/jid para poder agendar sobre ellos. */
 async function candidateLeads(sb: ReturnType<typeof getSupabase>, max = 16): Promise<Cand[]> {
   const sinceTs = Math.floor(new Date(STRATEGY_SINCE + "T00:00:00Z").getTime() / 1000);
-  const { data } = await sb
-    .from("chat_intel")
-    .select(INTEL_COLS)
-    .gte("last_ts", sinceTs)
-    .order("last_ts", { ascending: false })
-    .limit(2000);
-  const rows = (data ?? []) as any[];
+  // Desde la foto compartida (ver intelCache.ts): era otra lectura de 2.000
+  // filas contra Supabase que pedía un subconjunto de las mismas columnas.
+  const rows = (await getIntelSnapshot<any>()).filter((r) => (r.last_ts ?? 0) >= sinceTs);
   const enriched = rows.map((r) => {
     const silencio = Math.round(daysSince(r.last_ts));
     const ultimo = r.intervalos?.ultimo_emisor ?? null;

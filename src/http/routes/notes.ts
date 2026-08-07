@@ -22,6 +22,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { brainConfigured, getSupabase } from "../../brain/supabase";
+import { invalidateIntelCache, onIntelInvalidate } from "../../brain/intelCache";
 import { runJson, runText, suggestModel } from "../../ai/agent";
 import { getPlanContext } from "../../brain/plan";
 import { getBusinessSnapshot } from "../../brain/businessSnapshot";
@@ -87,14 +88,21 @@ const askModel = process.env.WA_AI_MODEL_ASK ?? suggestModel;
 
 type AskCartera = { lines: string; shownCount: number; totalWithSignal: number };
 let askCarteraCache: { at: number; value: AskCartera } | null = null;
-const ASK_CARTERA_TTL_MS = 60_000;
+/**
+ * 30 min, no 60 s. El TTL no es lo que mantiene esto fresco — lo hace la
+ * invalidación de abajo, que se dispara con CUALQUIER escritura en chat_intel.
+ * Con 60 s, una conversación larga con Fransua rehacía esta lectura de 2.000
+ * filas una vez por minuto, y eso era parte de los 10,1 GB de egress de Supabase
+ * que desbordaron el plan gratuito (auditoría 2026-08-07).
+ */
+const ASK_CARTERA_TTL_MS = 30 * 60_000;
+// Un cambio real en chat_intel tira esta foto al instante (ver brain/intelCache.ts).
+onIntelInvalidate(() => { askCarteraCache = null; });
 
 /**
  * La "foto" de la cartera que se incrusta en el prompt de /intel/ask. Se cachea
- * ASK_CARTERA_TTL_MS en memoria: en una conversación de varios turnos, solo el
- * primer turno paga la lectura de Supabase (~0,5-1s); los siguientes salen al
- * modelo directamente. El intel cambia despacio (lo refresca el análisis de
- * conversaciones), así que 60s de frescura no pierden nada relevante.
+ * en memoria: en una conversación de varios turnos, solo el primer turno paga la
+ * lectura de Supabase (~0,5-1s); los siguientes salen al modelo directamente.
  */
 async function getAskCartera(): Promise<AskCartera> {
   const nowMs = Date.now();
@@ -243,6 +251,7 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       if (Object.keys(patch).length) {
         patch.updated_at = new Date().toISOString();
         await sb.from("chat_intel").update(patch).eq("jid", intel.jid);
+        invalidateIntelCache(); // el listado se sirve de memoria; ver brain/intelCache.ts
       }
     }
 

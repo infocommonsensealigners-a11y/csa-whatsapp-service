@@ -21,6 +21,7 @@ import { suggestModel } from "./agent";
 import { getLeadContext360 } from "../brain/leadContext";
 import { getBusinessSnapshot } from "../brain/businessSnapshot";
 import { getObjeciones } from "../brain/objeciones";
+import { getIntelSnapshot } from "../brain/intelCache";
 import { getSupabase, brainConfigured } from "../brain/supabase";
 import { createAgendaEvent } from "../brain/agenda";
 import { insertConPhone } from "../brain/phoneColumn";
@@ -109,13 +110,9 @@ const buscarLeads = tool(
   async (args: { texto: string }) => {
     if (!brainConfigured()) return txt("Inteligencia no disponible.");
     const q = (args.texto ?? "").toLowerCase().trim();
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from("chat_intel")
-      .select("source_row,phone,display_name,resumen,etiquetas,producto,temperatura")
-      .order("last_ts", { ascending: false })
-      .limit(2000);
-    if (error) return txt("Error consultando la inteligencia.");
+    // Desde la foto compartida (ver brain/intelCache.ts): antes cada pregunta a
+    // Fransua que usaba esta tool bajaba 2.000 filas de Supabase.
+    const data = await getIntelSnapshot<any>();
     const rows = (data ?? []).filter((r: any) => {
       const ets = Array.isArray(r.etiquetas) ? r.etiquetas.join(" ") : "";
       return `${r.display_name ?? ""} ${r.resumen ?? ""} ${r.producto ?? ""} ${ets}`.toLowerCase().includes(q);
@@ -232,10 +229,7 @@ const leadsDelCrm = tool(
     const intel = new Map<string, { temperatura: string | null; last_ts: number | null }>();
     if (brainConfigured()) {
       try {
-        const { data } = await getSupabase()
-          .from("chat_intel")
-          .select("source_row,phone,temperatura,last_ts")
-          .limit(3000);
+        const data = await getIntelSnapshot<any>(); // foto compartida, ver brain/intelCache.ts
         for (const r of (data ?? []) as { source_row: number | null; phone: string | null; temperatura: string | null; last_ts: number | null }[]) {
           if (r.phone) intel.set(String(r.phone), { temperatura: r.temperatura, last_ts: r.last_ts });
           if (r.source_row != null) intel.set(`row:${r.source_row}`, { temperatura: r.temperatura, last_ts: r.last_ts });
@@ -282,13 +276,7 @@ const dormidosReactivables = tool(
     if (!brainConfigured()) return txt("Inteligencia no disponible.");
     const diasMin = Number.isFinite(args.dias_min) && Number(args.dias_min) > 0 ? Number(args.dias_min) : 30;
     const nowSec = Date.now() / 1000;
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from("chat_intel")
-      .select("display_name,phone,source_row,temperatura,resumen,last_ts,etiquetas,producto")
-      .order("last_ts", { ascending: false })
-      .limit(3000);
-    if (error) return txt("Error consultando la inteligencia de conversaciones.");
+    const data = await getIntelSnapshot<any>(); // foto compartida, ver brain/intelCache.ts
     const rows = (data ?? []).filter((r: any) => {
       if (!REACTIVABLES.has(String(r.temperatura))) return false; // reactivable según conversación
       const esCliente = Array.isArray(r.etiquetas) && r.etiquetas.some((e: any) => String(e).toLowerCase() === "cliente");

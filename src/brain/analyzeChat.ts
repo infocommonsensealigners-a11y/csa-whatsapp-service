@@ -11,6 +11,7 @@
  */
 import { getDb } from "../db/db";
 import { getSupabase, brainConfigured } from "./supabase";
+import { invalidateIntelCache } from "./intelCache";
 import { runJson, bulkModel } from "../ai/agent";
 import { fetchExistingChatIntel, mergeAiFields } from "./chatIntelMerge";
 import { getEstrategiaCSA } from "./estrategia";
@@ -288,5 +289,8 @@ export async function analyzeChat(jid: string): Promise<AnalyzeResult> {
   const sb = getSupabase();
   const { error } = await sb.from("chat_intel").upsert(record, { onConflict: "jid" });
   if (error) return { ok: false, reason: error.message, status: 502 };
+  // El listado se sirve desde memoria (ver brain/intelCache.ts): sin esto, un
+  // chat recién asimilado tardaría hasta el TTL en aparecer en el CRM.
+  invalidateIntelCache();
   return { ok: true, record };
 }

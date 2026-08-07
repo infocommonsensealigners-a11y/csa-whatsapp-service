@@ -230,9 +230,15 @@ const leadsDelCrm = tool(
     if (brainConfigured()) {
       try {
         const data = await getIntelSnapshot<any>(); // foto compartida, ver brain/intelCache.ts
+        // ⚠️ GANA LA FILA MÁS RECIENTE. Hay 6 teléfonos y 13 source_row con más
+        // de una fila en chat_intel (chats gemelos @lid + <tel>@s.whatsapp.net).
+        // La foto viene ordenada por last_ts DESC, así que la primera que se ve
+        // de cada clave es la buena: si se sobrescribiera, mandaría la MÁS VIEJA
+        // y Fransua vería "frío" de hace un año en un lead que hoy está templado.
         for (const r of (data ?? []) as { source_row: number | null; phone: string | null; temperatura: string | null; last_ts: number | null }[]) {
-          if (r.phone) intel.set(String(r.phone), { temperatura: r.temperatura, last_ts: r.last_ts });
-          if (r.source_row != null) intel.set(`row:${r.source_row}`, { temperatura: r.temperatura, last_ts: r.last_ts });
+          const v = { temperatura: r.temperatura, last_ts: r.last_ts };
+          if (r.phone && !intel.has(String(r.phone))) intel.set(String(r.phone), v);
+          if (r.source_row != null && !intel.has(`row:${r.source_row}`)) intel.set(`row:${r.source_row}`, v);
         }
       } catch { /* sin intel: el filtro de estado sigue funcionando */ }
     }

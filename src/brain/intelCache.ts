@@ -97,26 +97,42 @@ const SNAPSHOT_COLS =
   "jid,phone,display_name,source_row,producto,first_ts,last_ts,msg_count,from_me_count,temperatura,temperatura_motivo,resumen,intereses,intervalos,etiquetas,model,updated_at";
 
 /**
- * LA foto de chat_intel: la única consulta a Supabase que baja la tabla.
+ * LA foto de chat_intel: la única lectura de la tabla, ordenada por `last_ts`
+ * descendente (de lo más reciente a lo más antiguo).
  *
  * SIN filtro de fecha a propósito. Los consumidores de ESTRATEGIA (/intel/list,
  * /intel/summary, los leads candidatos de la agenda) recortan luego en memoria a
- * su ventana — abril de 2025 en adelante—, pero dos tools de Fransua leían la
+ * su ventana — abril de 2025 en adelante —, pero dos tools de Fransua leen la
  * tabla ENTERA, y hay 504 chats anteriores a esa fecha (de 1.400). Filtrar aquí
- * le habría quitado a Fransua un tercio de su memoria sin que se notara.
+ * le quitaría a Fransua un tercio de su memoria sin que se notara en pantalla.
  *
- * El tope de 4.000 es un cortafuegos por si la tabla crece mucho.
+ * ⚠️ SE PAGINA porque **PostgREST corta en 1.000 filas por respuesta y `.limit()`
+ * NO lo sube**: pedir `.limit(4000)` devuelve 1.000 y punto, sin error ni aviso.
+ * Todas las consultas que había antes (`limit(2000)`, `limit(3000)`) se estaban
+ * comiendo ese tope en silencio, así que Fransua nunca llegó a ver los ~400
+ * chats más antiguos. Paginar cuesta una petición más cada 30 min y se los
+ * devuelve.
  */
+const PAGE = 1000;
+const MAX_FILAS = 8000; // cortafuegos por si la tabla se desboca
+
 export async function getIntelSnapshot<T = any>(): Promise<T[]> {
   return getIntelRows<T>(async () => {
     const { getSupabase } = await import("./supabase");
-    const { data, error } = await getSupabase()
-      .from("chat_intel")
-      .select(SNAPSHOT_COLS)
-      .order("last_ts", { ascending: false })
-      .limit(4000);
-    if (error) throw new Error(error.message);
-    return (data ?? []) as unknown as T[];
+    const sb = getSupabase();
+    const todas: unknown[] = [];
+    for (let desde = 0; desde < MAX_FILAS; desde += PAGE) {
+      const { data, error } = await sb
+        .from("chat_intel")
+        .select(SNAPSHOT_COLS)
+        .order("last_ts", { ascending: false })
+        .range(desde, desde + PAGE - 1);
+      if (error) throw new Error(error.message);
+      const pagina = data ?? [];
+      todas.push(...pagina);
+      if (pagina.length < PAGE) break; // última página
+    }
+    return todas as T[];
   });
 }
 

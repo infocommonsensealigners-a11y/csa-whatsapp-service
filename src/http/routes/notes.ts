@@ -22,7 +22,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { brainConfigured, getSupabase } from "../../brain/supabase";
-import { invalidateIntelCache, onIntelInvalidate } from "../../brain/intelCache";
+import { getIntelSnapshot, invalidateIntelCache, onIntelInvalidate } from "../../brain/intelCache";
 import { runJson, runText, suggestModel } from "../../ai/agent";
 import { getPlanContext } from "../../brain/plan";
 import { getBusinessSnapshot } from "../../brain/businessSnapshot";
@@ -108,17 +108,13 @@ async function getAskCartera(): Promise<AskCartera> {
   const nowMs = Date.now();
   if (askCarteraCache && nowMs - askCarteraCache.at < ASK_CARTERA_TTL_MS) return askCarteraCache.value;
 
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from("chat_intel")
-    .select("display_name,producto,temperatura,resumen,intereses,etiquetas,last_ts,intervalos")
-    .order("last_ts", { ascending: false })
-    .limit(2000);
-  if (error) throw new Error(error.message);
+  // Desde la foto compartida (ver brain/intelCache.ts). Además de ahorrarse la
+  // lectura, gana las ~400 filas que su `.limit(2000)` perdía en silencio contra
+  // el tope de 1.000 de PostgREST.
+  const rows = (await getIntelSnapshot<any>()) as any[];
 
   const now = Math.floor(nowMs / 1000);
   const rank = (t: string | null) => (t === "caliente" ? 3 : t === "templado" ? 2 : t === "frio" ? 1 : 0);
-  const rows = (data ?? []) as any[];
   // Prioriza leads con SEÑAL (temperatura o resumen), por temperatura y recencia.
   const withSignal = rows
     .filter((r) => r.temperatura || r.resumen)

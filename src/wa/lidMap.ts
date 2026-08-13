@@ -33,6 +33,27 @@ export function pnToSpanishPhone(pn: string | null | undefined): string | null {
   return null;
 }
 
+/**
+ * Clave de teléfono para CRUZAR con el CRM: móvil español → 9 dígitos;
+ * extranjero → todos sus dígitos con prefijo de país. Mismo formato que
+ * `phoneKey` de `linkLeads.ts`, para que las claves casen.
+ *
+ * ⚠️ Existe porque `pnToSpanishPhone` descarta lo no español, y con ella un
+ * `@lid` de fuera de España se quedaba SIN teléfono para siempre aunque su
+ * `senderPn` estuviera guardado: el chat existía, el número estaba en la base, y
+ * el CRM no podía atribuirlo a nadie. No sustituye a la otra función: en
+ * `chats.phone` se sigue guardando solo el español, porque el esquema y
+ * `jidToPhone` lo definen así y hay consumidores que cuentan con eso.
+ */
+export function pnToPhoneKey(pn: string | null | undefined): string | null {
+  if (!pn) return null;
+  const es = pnToSpanishPhone(pn);
+  if (es) return es;
+  let d = String(pn).split("@")[0].split(":")[0].replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  return d.length >= 10 && d.length <= 15 ? d : null;
+}
+
 const isLid = (jid: string | null | undefined) => !!jid && jid.endsWith("@lid");
 
 /**
@@ -48,7 +69,10 @@ export function recordLidFromKey(
   if (!isLid(jid) || !senderPn) return;
   try {
     const db = getDb();
-    const phone = pnToSpanishPhone(senderPn);
+    // En el MAPA va la clave de cruce (incluye extranjeros); en `chats.phone`
+    // solo el móvil español, que es lo que su esquema promete.
+    const phone = pnToPhoneKey(senderPn);
+    const phoneEs = pnToSpanishPhone(senderPn);
     db.prepare(
       `INSERT INTO wa_lid_map(lid, pn, phone, source, created_at)
        VALUES (@lid, @pn, @phone, @source, @now)
@@ -56,10 +80,10 @@ export function recordLidFromKey(
          pn = excluded.pn,
          phone = COALESCE(excluded.phone, wa_lid_map.phone)`
     ).run({ lid: jid, pn: String(senderPn), phone, source, now: Math.floor(Date.now() / 1000) });
-    if (phone) {
+    if (phoneEs) {
       // Solo rellenar: si ya tenía teléfono, se respeta.
       db.prepare("UPDATE chats SET phone = @phone WHERE jid = @jid AND (phone IS NULL OR phone = '')").run({
-        phone,
+        phone: phoneEs,
         jid,
       });
     }

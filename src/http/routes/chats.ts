@@ -23,20 +23,73 @@ interface ChatRow {
   unread: number;
   /** from_me del ÚLTIMO mensaje; null si el chat no tiene ninguno. */
   last_from_me: number | null;
+  /** Nombre del lead del CRM atado a este chat (vínculo activo), si lo hay. */
+  lead_name: string | null;
+  /** Fila del CRM del vínculo activo, si lo hay. */
+  lead_source_row: number | null;
+}
+
+/**
+ * ¿Es un jid de "número oculto" de WhatsApp? Su parte de usuario es un
+ * identificador interno de 15 dígitos, NO un teléfono: pintarlo tal cual es lo
+ * que hacía que el teléfono flotante pareciera "inventarse" un número.
+ */
+function esLid(jid: string): boolean {
+  return jid.endsWith("@lid");
+}
+
+/**
+ * Nombre que se ENSEÑA de un chat, por orden de fiabilidad:
+ *   nombre de WhatsApp → nombre del lead del CRM → teléfono → etiqueta honesta.
+ *
+ * ⚠️ EL ÚLTIMO RECURSO NO PUEDE SER EL JID (bug reportado el 2026-08-13: la
+ * cabecera del teléfono flotante mostraba "154455630713007" como si fuera el
+ * número de la persona, cuando es el identificador interno de un `@lid`). Para
+ * un número oculto sin nombre se dice justamente eso; para el resto, el número
+ * sí es real y se puede mostrar.
+ *
+ * El nombre del CRM ya se consultaba en este mismo endpoint... pero solo en el
+ * `WHERE` de búsqueda: se podía ENCONTRAR el chat buscando "Susana" y aun así
+ * verlo rotulado con el LID. Ahora ese JOIN también se proyecta.
+ */
+function nombreDeChat(row: ChatRow): string {
+  const wa = (row.display_name ?? "").trim();
+  if (wa) return wa;
+  const crm = (row.lead_name ?? "").trim();
+  if (crm) return crm;
+  const tel = (row.phone ?? "").trim();
+  if (tel) return tel;
+  if (esLid(row.jid)) return "Número oculto";
+  const user = row.jid.split("@")[0].split(":")[0];
+  return /^\d{6,}$/.test(user) ? `+${user}` : "Contacto sin nombre";
 }
 
 function toSummary(row: ChatRow): ChatSummary {
   return {
     jid: row.jid,
     phone: row.phone,
-    displayName: row.display_name || (row.phone ?? row.jid.split("@")[0]),
+    displayName: nombreDeChat(row),
     lastMessageAt: row.last_message_at,
     lastMessagePreview: row.last_message_preview,
     unread: row.unread,
     // Habló ELLA/ÉL el último → la pelota está en nuestro tejado.
     pendingReply: row.last_from_me === 0,
     ignored: row.ignored === 1,
-    links: [],
+    // El contrato ya preveía este hueco (`ChatLeadLink`) y estaba a []: sin él,
+    // la interfaz no podía saber a qué lead pertenece un chat sin volver a
+    // adivinarlo por su cuenta.
+    links:
+      row.lead_source_row != null
+        ? [
+            {
+              sourceRow: row.lead_source_row,
+              method: "auto" as const,
+              leadName: (row.lead_name ?? "").trim() || null,
+              phoneSnapshot: row.phone,
+              healthy: true,
+            },
+          ]
+        : [],
     approvedTags: [],
     proposedTags: [],
     hasAbstract: false,
@@ -86,7 +139,14 @@ export function registerChatRoutes(app: FastifyInstance): void {
       : "WHERE c.ignored = 0";
     const rows = db
       .prepare(
-        `SELECT c.jid, c.phone, c.display_name, c.last_message_at, c.last_message_preview, c.ignored,
+        `SELECT c.jid,
+                -- El teléfono REAL aunque el chat sea @lid: mismo COALESCE que
+                -- /chats/index (chats.phone está NULL en todos los @lid).
+                COALESCE(NULLIF(c.phone,''), lm.phone, cll.phone_snapshot, ld.phone) AS phone,
+                c.display_name,
+                cll.source_row                                   AS lead_source_row,
+                COALESCE(NULLIF(cll.lead_name_snapshot,''), ld.name) AS lead_name,
+                c.last_message_at, c.last_message_preview, c.ignored,
                 -- NO LEÍDOS: un mensaje solo cuenta si es posterior a AMBAS
                 -- marcas — la local (abrir el chat aquí) y la de WhatsApp
                 -- (leerlo en el móvil o en WhatsApp Web, ver src/wa/readState.ts).
@@ -101,7 +161,20 @@ export function registerChatRoutes(app: FastifyInstance): void {
                 -- quien lo pinta, no de aquí.
                 (SELECT m2.from_me FROM messages m2
                   WHERE m2.chat_jid = c.jid ORDER BY m2.ts DESC LIMIT 1) AS last_from_me
-         FROM chats c ${where}
+         FROM chats c
+         LEFT JOIN wa_lid_map lm ON lm.lid = c.jid
+         -- ⚠️ UN SOLO VÍNCULO POR CHAT. Hay 7 chats con más de un vínculo activo
+         -- (una persona con dos filas en el CRM), y sin este desempate el LEFT
+         -- JOIN devolvería el chat repetido: con LIMIT/OFFSET los duplicados se
+         -- comen sitios de la página y la lista se salta conversaciones. Gana el
+         -- vínculo tocado más recientemente.
+         LEFT JOIN chat_lead_links cll
+                ON cll.chat_jid = c.jid AND cll.status = 'active'
+               AND cll.source_row = (SELECT c2.source_row FROM chat_lead_links c2
+                                      WHERE c2.chat_jid = c.jid AND c2.status = 'active'
+                                      ORDER BY c2.updated_at DESC, c2.source_row DESC LIMIT 1)
+         LEFT JOIN lead_directory ld ON ld.source_row = cll.source_row
+         ${where}
          ORDER BY c.last_message_at DESC
          LIMIT @limit OFFSET @offset`
       )
@@ -157,14 +230,30 @@ export function registerChatRoutes(app: FastifyInstance): void {
   app.get("/chats/index", async () => {
     const filas = getDb()
       .prepare(
+        /**
+         * `ld.phone` cierra el último hueco (bug del 2026-08-13, Núñez del
+         * Prado sin icono de WhatsApp estando en conversación): un chat
+         * vinculado POR NOMBRE guarda `phone_snapshot = chats.phone`, que en un
+         * `@lid` es NULL, así que entraba en el índice sin teléfono y su única
+         * vía de cruce era el número de fila — justo el puntero que se mueve.
+         * El teléfono del lead sí está en el directorio del CRM.
+         */
         `SELECT c.jid                                        AS jid,
-                COALESCE(NULLIF(c.phone,''), lm.phone, cll.phone_snapshot) AS phone,
+                COALESCE(NULLIF(c.phone,''), lm.phone, cll.phone_snapshot, ld.phone) AS phone,
                 c.last_message_at                            AS lastMessageAt,
                 cll.source_row                               AS sourceRow
            FROM chats c
            LEFT JOIN wa_lid_map lm ON lm.lid = c.jid
+           -- Un solo vínculo por chat (ver la nota en /chats): aquí la repetición
+           -- no rompía nada porque el cliente construye mapas, pero devolver el
+           -- mismo chat dos veces con teléfonos distintos hace que cuál gane
+           -- dependa del orden, y eso es justo lo que no queremos en un cruce.
            LEFT JOIN chat_lead_links cll
                   ON cll.chat_jid = c.jid AND cll.status = 'active'
+                 AND cll.source_row = (SELECT c2.source_row FROM chat_lead_links c2
+                                        WHERE c2.chat_jid = c.jid AND c2.status = 'active'
+                                        ORDER BY c2.updated_at DESC, c2.source_row DESC LIMIT 1)
+           LEFT JOIN lead_directory ld ON ld.source_row = cll.source_row
           WHERE c.ignored = 0
           ORDER BY c.last_message_at DESC`
       )

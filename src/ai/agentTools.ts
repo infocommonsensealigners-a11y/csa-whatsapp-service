@@ -21,6 +21,7 @@ import { suggestModel } from "./agent";
 import { getLeadContext360 } from "../brain/leadContext";
 import { getBusinessSnapshot } from "../brain/businessSnapshot";
 import { getObjeciones } from "../brain/objeciones";
+import { getObjecionesClinicas } from "../brain/objecionesClinicas";
 import { getIntelSnapshot } from "../brain/intelCache";
 import { getSupabase, brainConfigured } from "../brain/supabase";
 import { createAgendaEvent } from "../brain/agenda";
@@ -385,6 +386,38 @@ const objecionesDoctores = tool(
   }
 );
 
+/**
+ * OBJECIONES CLÍNICAS DE LOS DOCTORES — hermana de la anterior, pero para las
+ * dudas de TÉCNICA/INDICACIÓN/CAPACIDAD PROPIA/MATERIAL, no las comerciales.
+ * Nace de que un comercial (Fran) no puede cerrar solo "no me atrevo con un
+ * Marpe" o "¿esto sirve con mi marca de alineadores?" — hace falta la autoridad
+ * clínica del Dr. Lozano, y este análisis recoge también qué le tocaría validar
+ * a él y qué respuestas ya funcionan porque Fran las ha dado y han servido.
+ */
+const objecionesClinicas = tool(
+  "objeciones_clinicas",
+  "Las objeciones y dudas CLÍNICAS de los doctores (técnica, indicación de casos, capacidad propia, compatibilidad con su material/marca de alineadores, resultado/recidiva, protocolo) extraídas de TODO el histórico de WhatsApp y llamadas — distinto de 'objeciones_doctores', que es lo COMERCIAL (precio, tiempo, aplazamientos). Trae el ranking por frecuencia, citas literales verificadas, la respuesta que ya funciona (construida a partir de lo que Fran realmente contesta) y qué haría falta preguntarle al Dr. Lozano para cerrar las más difíciles. Úsala cuando pregunten por dudas clínicas, técnicas, de indicación, de material o de si 'se atreve' con algo — y para el top de objeciones clínicas.",
+  {
+    sobre: z
+      .string()
+      .optional()
+      .describe(
+        "opcional: el tema concreto (p.ej. 'Marpe', 'compatibilidad con Spark', 'no se atreve con clase III'). Déjalo vacío para traer el listado completo."
+      ),
+  },
+  async (args: { sobre?: string }) => {
+    const r = await getObjecionesClinicas(args.sobre ?? "");
+    if (!r) {
+      return txt(
+        "No he podido acceder al análisis de objeciones clínicas ahora mismo. No me lo invento: vuelve a preguntarme en un momento."
+      );
+    }
+    return txt(
+      `${r.texto}\n\nHay un INFORME COMPLETO en HTML (con todas las citas, la respuesta desarrollada por objeción, y las preguntas listas para que las conteste el Dr. Lozano) en ${r.informeUrl} — ofrécelo si la pregunta es amplia o si te piden algo presentable.`
+    );
+  }
+);
+
 /* -------------------------------------------------------------------------- */
 /* Herramientas de ESCRITURA (por petición: cierran sobre el ACTOR real)      */
 /* -------------------------------------------------------------------------- */
@@ -568,6 +601,7 @@ const READ_TOOL_NAMES = [
   "mcp__fransua__dormidos_reactivables",
   "mcp__fransua__consultar_agenda",
   "mcp__fransua__objeciones_doctores",
+  "mcp__fransua__objeciones_clinicas",
 ];
 const WRITE_TOOL_NAMES = [
   "mcp__fransua__crear_evento_agenda",
@@ -592,7 +626,7 @@ export async function runAgent(prompt: string, model?: string, actor?: string): 
   const fransuaMcpServer = createSdkMcpServer({
     name: "fransua",
     version: "1.0.0",
-    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, ...writeTools],
+    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, objecionesClinicas, ...writeTools],
   });
 
   const q = query({

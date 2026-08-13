@@ -28,6 +28,17 @@ interface ExtractedContent {
   fileName?: string | null;
 }
 
+/**
+ * Texto útil o `null` — nunca la cadena vacía. WhatsApp entrega `""` (no
+ * `undefined`) en captions que el remitente no escribió, y guardar `""` es peor
+ * que guardar `null`: parece dato y no lo es, así que gana a los respaldos con
+ * `??` y encima esquiva los filtros `TRIM(text) <> ''` de las consultas.
+ */
+function noVacio(v: string | null | undefined): string | null {
+  const t = (v ?? "").trim();
+  return t ? t : null;
+}
+
 /** Desenvuelve wrappers (efímeros, view-once) y clasifica el contenido. */
 function extractContent(msg: WAMessage): ExtractedContent | null {
   const m = msg.message;
@@ -42,20 +53,30 @@ function extractContent(msg: WAMessage): ExtractedContent | null {
   if (inner.conversation) return { type: "text", text: inner.conversation };
   if (inner.extendedTextMessage?.text) return { type: "text", text: inner.extendedTextMessage.text };
   if (inner.imageMessage) {
-    return { type: "image", text: inner.imageMessage.caption ?? null, mimetype: inner.imageMessage.mimetype ?? null };
+    return { type: "image", text: noVacio(inner.imageMessage.caption), mimetype: inner.imageMessage.mimetype ?? null };
   }
   if (inner.videoMessage) {
-    return { type: "video", text: inner.videoMessage.caption ?? null, mimetype: inner.videoMessage.mimetype ?? null };
+    return { type: "video", text: noVacio(inner.videoMessage.caption), mimetype: inner.videoMessage.mimetype ?? null };
   }
   if (inner.audioMessage) {
     return { type: "audio", text: null, mimetype: inner.audioMessage.mimetype ?? null };
   }
   if (inner.documentMessage) {
+    /**
+     * ⚠️ `??` NO SIRVE AQUÍ: hay un cliente de WhatsApp de Fran que manda
+     * SIEMPRE `caption: ""` en los documentos (medido sobre la base real: de los
+     * envíos con id de la familia `4A…`, el 100% se guardó con el nombre
+     * perdido, frente a 0% en las familias `3EB0…`/`2A…`). Con `??` esa cadena
+     * vacía gana a `fileName`, se guarda `text=""`, y todo lo que detecta por
+     * NOMBRE DE DOCUMENTO —"programa enviado" del CRM, que además filtra por
+     * `TRIM(text) <> ''`— se queda ciego: el PDF se envió pero no se ve.
+     * Caso real: Silvia Martínez, PDF del SBA no detectado (2026-08-13).
+     */
     return {
       type: "document",
-      text: inner.documentMessage.caption ?? inner.documentMessage.fileName ?? null,
+      text: noVacio(inner.documentMessage.caption) ?? noVacio(inner.documentMessage.fileName),
       mimetype: inner.documentMessage.mimetype ?? null,
-      fileName: inner.documentMessage.fileName ?? null,
+      fileName: noVacio(inner.documentMessage.fileName),
     };
   }
   if (inner.stickerMessage) return { type: "other", text: null };

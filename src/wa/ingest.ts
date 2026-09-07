@@ -170,7 +170,7 @@ interface IngestResult {
    * mensajes viejos y notificarlos daría de baja a gente por algo que escribió
    * hace meses.
    */
-  entrantes: Array<{ telefono: string; texto: string }>;
+  entrantes: Array<{ telefono: string; texto: string; jid: string }>;
 }
 
 /**
@@ -229,7 +229,7 @@ function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean; en
         // respuesta de campaña o a darle de baja si pide que no le escribamos.
         if (opts?.enVivo && !msg.key.fromMe && content.type === "text" && content.text) {
           const tel = jidToPhone(jid) ?? (msg.key as { senderPn?: string } | undefined)?.senderPn ?? null;
-          if (tel) entrantes.push({ telefono: tel, texto: content.text });
+          if (tel) entrantes.push({ telefono: tel, texto: content.text, jid });
         }
       }
       // Chats `@lid`: el JID no lleva el número, pero Baileys nos da el teléfono
@@ -377,7 +377,7 @@ export function registerIngest(): void {
       // ingestMessages): así una foto/audio recién llegado se guarda al vuelo.
       const result = ingestMessages(messages, { fetchMedia: type === "notify", enVivo: type === "notify" });
       // Bajas y respuestas de campaña: fuera de la transacción y sin esperar.
-      for (const e of result.entrantes) void avisarEntrante(e.telefono, e.texto);
+      for (const e of result.entrantes) void avisarEntrante(e.telefono, e.texto, e.jid);
       console.log(
         `[ingest] upsert type=${type} recibidos=${messages.length} guardados=${result.touched.size}` +
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")

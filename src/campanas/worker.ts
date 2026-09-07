@@ -22,6 +22,7 @@
 
 import { config } from "../config";
 import { sendText } from "../wa/send";
+import { registrarAutomatico, registrarNota } from "./marcas";
 
 const POLL_MIN_MS = 5_000;
 const POLL_MAX_MS = 15 * 60_000;
@@ -34,6 +35,8 @@ interface EnvioPendiente {
   telefono: string;
   jid: string;
   texto: string;
+  /** Nota interna a dejar tras enviar (no se envía al lead). */
+  notaInterna?: string | null;
 }
 
 interface RespuestaSiguiente {
@@ -103,6 +106,9 @@ async function ciclo(): Promise<number> {
   const res = await sendText(e.jid, e.texto, actor);
 
   if (res.ok) {
+    // Marca de agua: distingue este mensaje de uno escrito por Fran a mano.
+    registrarAutomatico(e.jid, res.message.id, e.campanaNombre, e.campanaId);
+    if (e.notaInterna) registrarNota(e.jid, e.notaInterna, e.campanaId);
     await contarResultado(e, true);
     console.log(`[campanas] enviado a ${e.telefono} · ${e.campanaNombre}`);
     // El hueco entre mensajes lo decide el dashboard (`decidirEnvio`); aquí basta

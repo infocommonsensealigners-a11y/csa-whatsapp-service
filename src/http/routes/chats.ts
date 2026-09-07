@@ -10,6 +10,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { getDb } from "../../db/db";
+import { marcasDeChat } from "../../campanas/marcas";
 import { emitSse } from "../sse";
 import type { ChatSummary, WaMessage } from "../../shared/whatsapp-contracts";
 
@@ -293,17 +294,23 @@ export function registerChatRoutes(app: FastifyInstance): void {
       recuperable: number;
     }>;
 
+    // MARCA DE AGUA de campaña: qué mensajes los mandó la automatización y qué
+    // notas internas de cierre hay en este chat (esas no se enviaron a nadie).
+    const marcas = marcasDeChat(jid);
+    const autos = new Set(marcas.automaticos);
+
     const messages: WaMessage[] = rows.map((r) => ({
       id: r.id,
       chatJid: r.chat_jid,
       fromMe: r.from_me === 1,
+      automatico: autos.has(r.id),
       ts: r.ts,
       type: r.type,
       text: r.text,
       mediaUrl: r.media_path ? `/api/whatsapp/media/${encodeURIComponent(r.chat_jid)}/${encodeURIComponent(r.id)}` : null,
       recuperable: r.recuperable === 1,
     }));
-    return { messages };
+    return { messages, campana: marcas.campana, notas: marcas.notas };
   });
 
   app.post("/chats/:jid/opened", async (request) => {

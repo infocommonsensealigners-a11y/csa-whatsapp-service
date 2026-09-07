@@ -82,6 +82,12 @@ export interface WaMessage {
   text: string | null;
   /** Ruta ya proxificada ('/api/whatsapp/media/<jid>/<id>') o null. */
   mediaUrl: string | null;
+  /**
+   * Lo envio la AUTOMATIZACION de una campana, no una persona. La UI le pone la
+   * marca de agua: en `messages` un envio automatico y uno escrito por Fran a
+   * mano son los dos `from_me = 1` y nada mas los distingue.
+   */
+  automatico?: boolean;
 }
 
 /* ----------------------------- Artefactos IA ----------------------------- */

@@ -21,6 +21,7 @@ interface EnvioConversacional {
   telefono: string;
   jid: string;
   texto: string;
+  permitirChatNuevo?: boolean;
 }
 
 interface Respuesta {
@@ -65,7 +66,9 @@ export async function avisarEntrante(telefono: string, texto: string, jid: strin
     if (j.notaInterna) registrarNota(jid, j.notaInterna, j.campanaId ?? null);
 
     if (j.envio?.texto) {
-      const r = await sendText(j.envio.jid, j.envio.texto, `campaña:${j.envio.campanaNombre}`.slice(0, 120));
+      const r = await sendText(j.envio.jid, j.envio.texto, `campaña:${j.envio.campanaNombre}`.slice(0, 120), {
+        permitirChatNuevo: j.envio.permitirChatNuevo === true,
+      });
       if (r.ok) {
         // Marca de agua: este mensaje lo escribió la automatización, no Fran.
         registrarAutomatico(j.envio.jid, r.message.id, j.envio.campanaNombre, j.envio.campanaId);

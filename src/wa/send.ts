@@ -21,7 +21,7 @@
 import { getDb } from "../db/db";
 import { emitSse } from "../http/sse";
 import { isStorableChatJid, jidToPhone } from "./jidPhone";
-import { getActiveSocket } from "./socket";
+import { getActiveSocket, lookupLids } from "./socket";
 import { MEDIA_MAX_BYTES, extFromMime, saveMediaBuffer } from "./mediaStore";
 
 const MIN_GAP_MS = 1_500;
@@ -81,22 +81,79 @@ function ensureAuditTable(): void {
 }
 
 /** Chat existente + socket abierto — la comprobación común a texto y a media. */
-function requireOnlineKnownChat(jid: string): { ok: true; sock: NonNullable<ReturnType<typeof getActiveSocket>> } | { ok: false; error: string; code: "invalid" | "unknown-chat" | "offline" } {
+/**
+ * ⚠️ CHAT NUEVO (conversación en frío) — decisión del usuario 2026-09-07.
+ *
+ * Hasta hoy esta función exigía que el chat YA EXISTIERA, y era la salvaguarda
+ * que impedía escribir a alguien que nunca nos ha escrito. Se abre una puerta
+ * ESTRECHA porque de los 175 candidatos del taller de microtornillos solo 49
+ * tenían conversación, y el usuario quiso llegar al resto sabiendo el riesgo
+ * (se le advirtió tres veces: es el patrón que provoca cierres de cuenta).
+ *
+ * La puerta es estrecha de verdad:
+ *  - Hay que pedirlo explícitamente por llamada (`permitirChatNuevo`), y solo lo
+ *    pide el worker de campañas cuando la campaña lo tiene activado. El envío
+ *    manual del teléfono flotante NUNCA lo pasa: sigue exigiendo chat existente.
+ *  - Antes de escribir se PREGUNTA A WHATSAPP si ese número existe
+ *    (`lookupLids` → `onWhatsApp`). Escribir a números que no están en WhatsApp
+ *    genera errores en cadena y es una señal de lista comprada.
+ */
+async function requireOnlineChat(
+  jid: string,
+  permitirChatNuevo: boolean,
+): Promise<
+  | { ok: true; sock: NonNullable<ReturnType<typeof getActiveSocket>>; esNuevo: boolean }
+  | { ok: false; error: string; code: "invalid" | "unknown-chat" | "offline" }
+> {
   if (!isStorableChatJid(jid)) return { ok: false, error: "Destino no válido (solo chats 1-a-1).", code: "invalid" };
-  const chat = getDb().prepare("SELECT jid FROM chats WHERE jid = ?").get(jid) as { jid: string } | undefined;
-  if (!chat) return { ok: false, error: "Ese chat no está en el historial.", code: "unknown-chat" };
   const sock = getActiveSocket();
   if (!sock) return { ok: false, error: "WhatsApp no está conectado ahora mismo.", code: "offline" };
-  return { ok: true, sock };
+
+  const chat = getDb().prepare("SELECT jid FROM chats WHERE jid = ?").get(jid) as { jid: string } | undefined;
+  if (chat) return { ok: true, sock, esNuevo: false };
+
+  if (!permitirChatNuevo) {
+    return { ok: false, error: "Ese chat no está en el historial.", code: "unknown-chat" };
+  }
+
+  // Comprobar que el número está en WhatsApp antes de estrenar conversación.
+  const res = await lookupLids([jid]);
+  const existe = res.some((r) => r.exists);
+  if (!existe) {
+    return { ok: false, error: "Ese número no está en WhatsApp.", code: "unknown-chat" };
+  }
+  return { ok: true, sock, esNuevo: true };
+}
+
+/**
+ * Crea la fila del chat cuando se estrena conversación.
+ *
+ * Sin esto el mensaje quedaría HUÉRFANO: `messages` tendría la fila pero
+ * `chats` no, y el teléfono flotante —que lista desde `chats`— no enseñaría la
+ * conversación. Se descubrió al montar el envío en frío.
+ */
+function asegurarChat(jid: string, ts: number): void {
+  getDb()
+    .prepare(
+      `INSERT INTO chats (jid, phone, display_name, last_message_at, last_message_preview, created_at, updated_at)
+       VALUES (?, ?, '', ?, '', ?, ?)
+       ON CONFLICT(jid) DO NOTHING`
+    )
+    .run(jid, jidToPhone(jid), ts, ts, ts);
 }
 
 /** Envía TEXTO plano a un chat 1-a-1 existente. Escrito a mano por una persona. */
-export async function sendText(jid: string, rawText: string, actor: string | null): Promise<SendResult> {
+export async function sendText(
+  jid: string,
+  rawText: string,
+  actor: string | null,
+  opts: { permitirChatNuevo?: boolean } = {},
+): Promise<SendResult> {
   const text = String(rawText ?? "").trim();
   if (!text || text.length > 4096) {
     return { ok: false, error: "El mensaje debe tener entre 1 y 4096 caracteres.", code: "invalid" };
   }
-  const known = requireOnlineKnownChat(jid);
+  const known = await requireOnlineChat(jid, opts.permitirChatNuevo === true);
   if (!known.ok) return known;
   const rate = checkRate();
   if (!rate.ok) return { ok: false, error: rate.error, code: "rate" };
@@ -107,6 +164,9 @@ export async function sendText(jid: string, rawText: string, actor: string | nul
     markSent();
     const ts = Math.floor(Date.now() / 1000);
     const id = result?.key?.id ?? `sent-${ts}-${Math.random().toString(36).slice(2)}`;
+    // Conversación estrenada: sin la fila de `chats` el mensaje queda huérfano
+    // y el teléfono flotante no la enseñaría.
+    if (known.esNuevo) asegurarChat(jid, ts);
 
     // Persistencia inmediata (el eco de messages.upsert deduplica por PK).
     db.prepare(
@@ -156,7 +216,9 @@ export async function sendMedia(jid: string, input: SendMediaInput, actor: strin
   if (input.buffer.byteLength > MEDIA_MAX_BYTES) {
     return { ok: false, error: `El archivo pesa más de ${Math.round(MEDIA_MAX_BYTES / 1024 / 1024)} MB.`, code: "too-big" };
   }
-  const known = requireOnlineKnownChat(jid);
+  // Los ADJUNTOS siguen exigiendo chat existente: estrenar conversacion con
+  // un archivo es peor que con un texto, y nadie lo ha pedido.
+  const known = await requireOnlineChat(jid, false);
   if (!known.ok) return known;
   const rate = checkRate();
   if (!rate.ok) return { ok: false, error: rate.error, code: "rate" };
@@ -174,6 +236,9 @@ export async function sendMedia(jid: string, input: SendMediaInput, actor: strin
     markSent();
     const ts = Math.floor(Date.now() / 1000);
     const id = result?.key?.id ?? `sent-${ts}-${Math.random().toString(36).slice(2)}`;
+    // Conversación estrenada: sin la fila de `chats` el mensaje queda huérfano
+    // y el teléfono flotante no la enseñaría.
+    if (known.esNuevo) asegurarChat(jid, ts);
 
     // Guarda el binario YA (lo tenemos en memoria: no hace falta re-descargarlo
     // de WhatsApp) para que la burbuja lo muestre al instante, con la misma

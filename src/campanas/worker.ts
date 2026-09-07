@@ -13,8 +13,9 @@
  *
  * NO habla con Baileys: llama a `sendText()` de `../wa/send`, el ÚNICO módulo con
  * permiso de publicación según `check:nosend`. Así se heredan solas sus
- * salvaguardas — solo chats 1-a-1 que ya existen, tope de ritmo y auditoría en
- * `wa_send_audit` — y el guardián no se amplía ni un milímetro.
+ * salvaguardas — solo chats 1-a-1, verificación del número antes de estrenar uno
+ * en frío, tope de ritmo y auditoría en `wa_send_audit` — y el guardián no se
+ * amplía ni un milímetro.
  *
  * Apagado por defecto: hace falta `CAMPANAS_WORKER=on`. Desplegar esto NO empieza
  * a enviar nada.
@@ -35,6 +36,8 @@ interface EnvioPendiente {
   telefono: string;
   jid: string;
   texto: string;
+  /** ⚠️ Permite estrenar conversación en frío (lo decide la campaña). */
+  permitirChatNuevo?: boolean;
   /** Nota interna a dejar tras enviar (no se envía al lead). */
   notaInterna?: string | null;
 }
@@ -103,7 +106,9 @@ async function ciclo(): Promise<number> {
 
   const e = r.envio;
   const actor = `campaña:${e.campanaNombre}`.slice(0, 120);
-  const res = await sendText(e.jid, e.texto, actor);
+  const res = await sendText(e.jid, e.texto, actor, {
+    permitirChatNuevo: e.permitirChatNuevo === true,
+  });
 
   if (res.ok) {
     // Marca de agua: distingue este mensaje de uno escrito por Fran a mano.

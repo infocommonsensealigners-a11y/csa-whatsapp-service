@@ -51,14 +51,40 @@ dashboard se puede **RESPONDER**. La garantía no se borró, se **acotó**:
 - **Fransua NO puede enviar.** Todo `src/ai/` y `src/brain/` tiene vetado el
   token: el agente puede *sugerir* texto, pero la única salida es la ruta
   `POST /chats/:jid/send`, que llama una persona desde la interfaz.
-- Salvaguardas en `send.ts`: solo texto (1..4096), solo chats 1-a-1 **ya
-  existentes** (no inicia conversaciones frías), ritmo mínimo 1,5 s entre envíos
-  y tope de 30 por 5 min, y **auditoría** en `wa_send_audit` (actor, chat,
-  longitud, cuándo).
+- Salvaguardas en `send.ts`: solo texto (1..4096), solo chats **1-a-1**, ritmo
+  mínimo 1,5 s entre envíos y tope de 30 por 5 min, y **auditoría** en
+  `wa_send_audit` (actor, chat, longitud, cuándo).
 
-⚠️ Si alguna vez hay que automatizar respuestas, **NO se hace ampliando esta
-allowlist**: es una decisión de producto y de riesgo de cuenta que debe tomar el
-usuario explícitamente.
+### 🧊 Chat en FRÍO: permitido, pero solo si quien llama lo pide (07-09-2026)
+
+Hasta el 07-09-2026 `send.ts` exigía que el chat **ya existiera**. Dejó de
+exigirlo porque los leads del taller de microtornillos entraron por un formulario
+de Kajabi y **nunca han escrito por WhatsApp**: de 175 candidatos, 123 no tenían
+conversación. Sin abrir chat nuevo la campaña se quedaba en 49 personas.
+
+Cómo está acotado, que es lo que importa:
+
+- `sendText(jid, texto, actor, { permitirChatNuevo })` — **por defecto `false`**.
+  Quien quiera estrenar conversación tiene que pedirlo explícitamente en cada
+  llamada; ninguna ruta lo pasa por su cuenta.
+- Antes de un envío en frío se comprueba con **`lookupLids`** que el número
+  existe de verdad en WhatsApp. Un jid inventado nunca sale.
+- `asegurarChat()` inserta la fila en `chats` para que el mensaje no quede
+  huérfano en la base de datos local.
+- **`sendMedia` sigue exigiendo chat existente** (`permitirChatNuevo` fijo a
+  `false`): mandar un archivo a un desconocido no tiene ningún caso de uso aquí.
+- El permiso nace en la **campaña** (`permitirChatNuevo` en el almacén del
+  dashboard, con su propio setter `marcarPermisoChatNuevo`) y viaja por
+  `/worker/siguiente` hasta aquí. Se ve en el panel y se puede apagar.
+- `check:nosend` **no se amplió ni un milímetro**: la puerta vive dentro del
+  único fichero que ya tenía permiso de publicar.
+
+⚠️ Esto es la parte que expone la cuenta. Si dudas, el valor correcto es `false`.
+
+⚠️ Respuestas AUTOMÁTICAS: existen desde el 07-09-2026 (`src/campanas/`), y se
+hicieron **sin ampliar la allowlist** — el worker llama a `sendText()` como
+cualquier otro. Fransua sigue sin poder enviar. Si hace falta otra automatización,
+el patrón es ese: pasar por `send.ts`, nunca añadir ficheros al guardián.
 
 ## 🏷️ ETIQUETAS: permitido SOLO en `src/wa/labels.ts` (decisión del usuario, 30-07-2026)
 

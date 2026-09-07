@@ -13,6 +13,7 @@ import { ensureClaudeAuth } from "./brain/secrets";
 import { startLeadLinkingScheduler } from "./brain/linkLeadsScheduler";
 import { startBackupScheduler } from "./brain/backup";
 import { startLearningScheduler } from "./brain/learning";
+import { arrancarWorkerCampanas } from "./campanas/worker";
 
 async function main(): Promise<void> {
   ensureDataDirs();
@@ -90,8 +91,19 @@ async function main(): Promise<void> {
     console.error("[backup-sidecar] no se pudo arrancar el backup automático:", (e as Error).message);
   }
 
+  // Worker de CAMPAÑAS comerciales. Apagado salvo CAMPANAS_WORKER=on, así que
+  // desplegar esto no empieza a enviar nada por sí solo.
+  try {
+    arrancarWorkerCampanas();
+  } catch (e) {
+    console.error("[campanas] no se pudo arrancar el worker:", (e as Error).message);
+  }
+
   console.log(`[http] Sidecar WhatsApp escuchando en http://${config.host}:${config.port}`);
-  console.log("[info] Servicio de SOLO LECTURA: este proceso no puede publicar en WhatsApp.");
+  // Publicar está acotado a src/wa/send.ts (envío manual desde el teléfono
+  // flotante y, si CAMPANAS_WORKER=on, el worker de campañas). Todo lo demás
+  // —incluido Fransua— sigue sin poder ni nombrar la API de publicación.
+  console.log("[info] Publicación acotada a src/wa/send.ts (check:nosend).");
 }
 
 function shutdown(): void {

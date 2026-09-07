@@ -12,6 +12,7 @@ import type { Chat, Contact, WAMessage } from "baileys";
 import { getDb, setMeta } from "../db/db";
 import { emitSse } from "../http/sse";
 import { isStorableChatJid, jidToPhone } from "./jidPhone";
+import { avisarEntrante } from "../campanas/entrantes";
 import { recordLidFromKey } from "./lidMap";
 import { applyWaRead } from "./readState";
 import { onWaEvent, downloadMedia } from "./socket";
@@ -162,6 +163,14 @@ interface IngestResult {
    *  la transacción (I/O de red; no puede vivir dentro de un db.transaction
    *  síncrono). Solo se rellena si `fetchMedia` (ver más abajo). */
   mediaCandidates: Array<{ jid: string; id: string; msg: WAMessage; mimetype: string | null; fileName: string | null }>;
+  /**
+   * Mensajes de TEXTO recién insertados que nos ha escrito ALGUIEN (from_me=0),
+   * para avisar al dashboard DESPUÉS de la transacción (es una llamada de red).
+   * Solo se rellena con `enVivo` — durante el history-sync se reprocesan miles de
+   * mensajes viejos y notificarlos daría de baja a gente por algo que escribió
+   * hace meses.
+   */
+  entrantes: Array<{ telefono: string; texto: string }>;
 }
 
 /**
@@ -172,12 +181,13 @@ interface IngestResult {
  * necesarias en su inmensa mayoría (auditoría 2026-08-06), así que el intento
  * fallaría casi siempre y solo el tráfico en vivo importa de verdad.
  */
-function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean }): IngestResult {
+function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean; enVivo?: boolean }): IngestResult {
   const db = getDb();
   const stmts = statements();
   const touched = new Set<string>();
   const seen = new Set<string>();
   const mediaCandidates: IngestResult["mediaCandidates"] = [];
+  const entrantes: IngestResult["entrantes"] = [];
   const now = Math.floor(Date.now() / 1000);
   /** jid `@lid` → teléfono que venía en key.senderPn (se aplica tras la transacción). */
   const lidPending = new Map<string, string>();
@@ -215,6 +225,12 @@ function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean }):
         if (opts?.fetchMedia && content.type !== "text" && content.type !== "other") {
           mediaCandidates.push({ jid, id, msg, mimetype: content.mimetype ?? null, fileName: content.fileName ?? null });
         }
+        // Nos ha escrito ALGUIEN, en vivo y con texto: candidato a marcar
+        // respuesta de campaña o a darle de baja si pide que no le escribamos.
+        if (opts?.enVivo && !msg.key.fromMe && content.type === "text" && content.text) {
+          const tel = jidToPhone(jid) ?? (msg.key as { senderPn?: string } | undefined)?.senderPn ?? null;
+          if (tel) entrantes.push({ telefono: tel, texto: content.text });
+        }
       }
       // Chats `@lid`: el JID no lleva el número, pero Baileys nos da el teléfono
       // real en key.senderPn → se materializa el mapeo y se rellena chats.phone
@@ -226,7 +242,7 @@ function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean }):
   run(messages);
   // Fuera de la transacción de mensajes (recordLidFromKey abre las suyas).
   for (const [jid, pn] of lidPending) recordLidFromKey(jid, pn);
-  return { touched, seen, mediaCandidates };
+  return { touched, seen, mediaCandidates, entrantes };
 }
 
 /**
@@ -359,7 +375,9 @@ export function registerIngest(): void {
     try {
       // Descarga de media SOLO en tráfico "notify" (en vivo, ver comentario de
       // ingestMessages): así una foto/audio recién llegado se guarda al vuelo.
-      const result = ingestMessages(messages, { fetchMedia: type === "notify" });
+      const result = ingestMessages(messages, { fetchMedia: type === "notify", enVivo: type === "notify" });
+      // Bajas y respuestas de campaña: fuera de la transacción y sin esperar.
+      for (const e of result.entrantes) void avisarEntrante(e.telefono, e.texto);
       console.log(
         `[ingest] upsert type=${type} recibidos=${messages.length} guardados=${result.touched.size}` +
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")

@@ -285,6 +285,36 @@ export function encolarSalientePorSiEsManual(s: Saliente & { ts: number }): void
 /** Espera antes del repaso: que el dashboard esté en pie y la base abierta. */
 const REPASO_MS = 45_000;
 
+/** Salientes que se revisan por chat en el repaso. Un chat de campaña tiene pocos. */
+const SALIENTES_A_REVISAR = 50;
+
+/**
+ * ¿Ha escrito una PERSONA en este chat desde que la automatización lo estrenó?
+ *
+ * Se mira de lo más nuevo a lo más viejo y se corta en cuanto se encuentra uno:
+ * basta con que exista.
+ */
+function escribioUnHumanoEnLaConversacion(jid: string): boolean {
+  const db = getDb();
+  try {
+    const primera = db
+      .prepare(`SELECT MIN(created_at) AS ts FROM campana_marcas WHERE chat_jid = ? AND wa_msg_id IS NOT NULL`)
+      .get(jid) as { ts: number | null } | undefined;
+    const desde = primera?.ts;
+    if (desde === null || desde === undefined) return false;
+    const salientes = db
+      .prepare(
+        `SELECT id, ts FROM messages
+          WHERE chat_jid = ? AND from_me = 1 AND ts >= ?
+          ORDER BY ts DESC, rowid DESC LIMIT ?`
+      )
+      .all(jid, desde, SALIENTES_A_REVISAR) as { id: string; ts: number }[];
+    return salientes.some((m) => !esDeLaAutomatizacion(m.id, jid, m.ts));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * TOMAS MANUALES QUE YA HABÍAN PASADO. Se repasa una vez al arrancar.
  *
@@ -295,13 +325,21 @@ const REPASO_MS = 45_000;
  * automatización tendría todavía dos mensajes de margen para escribir encima de
  * un compañero.
  *
- * La señal, con lo que ya hay en la base y sin preguntar nada a WhatsApp: en un
- * chat que ha tocado la automatización, si el ÚLTIMO mensaje que salió no lleva
- * marca de automático, lo escribió una persona y la conversación es suya.
+ * LA SEÑAL, con lo que ya hay en la base y sin preguntar nada a WhatsApp: en un
+ * chat que ha tocado la automatización, si HAY algún mensaje saliente sin marca
+ * de automático a partir del primer mensaje automático, lo escribió una persona
+ * DENTRO de la conversación de campaña, y esa conversación es suya.
  *
- * Es el último mensaje y no "algún mensaje" a propósito: un chat en el que Fran
- * escribió hace meses y que la automatización estrenó después no es una toma
- * manual, y darlo por tal cerraría conversaciones vivas sin motivo.
+ * ⚠️ «A partir del primer automático» es la clave, y la primera versión de esto
+ * miraba solo el ÚLTIMO saliente — que en el caso de Julio, el que originó todo
+ * el arreglo, es precisamente el mensaje automático que se colocó ENCIMA de lo
+ * que Fran había escrito a mano. O sea que el repaso encontraba el chat y
+ * decidía que lo llevaba la automatización: justo al revés.
+ *
+ * Y no vale «algún saliente sin marca» sin más: un chat en el que Fran escribió
+ * hace meses y que la automatización estrenó después no es una toma manual, y
+ * darlo por tal cerraría conversaciones vivas sin motivo. La ventana desde el
+ * primer automático separa las dos cosas exactamente.
  */
 export function repasarTomasManuales(): void {
   if (!token()) return;
@@ -316,16 +354,7 @@ export function repasarTomasManuales(): void {
     }
     const tomados: string[] = [];
     for (const { jid } of candidatos) {
-      let ultimo: { id: string; ts: number } | undefined;
-      try {
-        ultimo = getDb()
-          .prepare(`SELECT id, ts FROM messages WHERE chat_jid = ? AND from_me = 1 ORDER BY ts DESC, rowid DESC LIMIT 1`)
-          .get(jid) as { id: string; ts: number } | undefined;
-      } catch {
-        continue;
-      }
-      if (!ultimo || esDeLaAutomatizacion(ultimo.id, jid, ultimo.ts)) continue;
-      tomados.push(jid);
+      if (escribioUnHumanoEnLaConversacion(jid)) tomados.push(jid);
     }
     if (tomados.length === 0) {
       console.log("[campanas] repaso de tomas manuales: ninguna conversación la lleva un humano.");

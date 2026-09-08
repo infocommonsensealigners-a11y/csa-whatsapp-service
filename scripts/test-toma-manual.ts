@@ -78,17 +78,41 @@ audit.run("G", `${ACTOR_AUTOMATICO}CRM TADS JAVI`, "sent-3000-abc", 3000);
 automatico("H", "h1", 1000);
 msg.run("H", "h2", 1, 1600);
 
-// I) EMPATE de ts entre dos salientes a mano, lejos de cualquier automático:
-//    el `ORDER BY ts DESC, rowid DESC` tiene que coger el último → TOMA.
+// I) Varios salientes a mano, lejos de cualquier automático → TOMA.
 automatico("I", "i1", 1000);
 msg.run("I", "i2", 1, 5000);
 msg.run("I", "i3", 1, 5000);
 
+// J) EL CASO DE JULIO, que es el que originó todo el arreglo y el que la primera
+//    versión de este repaso NO cazaba: la automatización habló ÚLTIMA, encima de
+//    lo que Fran había escrito a mano. Mirando solo el último saliente parecía
+//    que el chat lo llevaba la automatización — justo al revés. → TOMA.
+automatico("J", "apertura", 46800);      // 13:00
+msg.run("J", "julio-1", 0, 46920);       // 13:02 «si correcto estoy apuntado»
+automatico("J", "recon1", 46920);        // 13:02
+msg.run("J", "fran-1", 1, 54780);        // 15:13 A MANO
+msg.run("J", "fran-2", 1, 54840);        // 15:14 A MANO
+msg.run("J", "julio-2", 0, 55680);       // 15:28 «a que costo?»
+automatico("J", "recon1-otra-vez", 55680);
+msg.run("J", "julio-3", 0, 56700);       // 15:45 «si, de acuerdo»
+automatico("J", "paso2", 56700);         // 15:45 — la automatización habla ÚLTIMA
+
+// K) Fran escribió hace meses, la automatización estrenó DESPUÉS y sigue sola.
+//    Es el caso que impide usar «algún saliente sin marca» sin ventana. → NO.
+msg.run("K", "hace-meses", 1, 100);
+automatico("K", "k1", 90000);
+msg.run("K", "doctor", 0, 90100);
+
 const candidatos = db
   .prepare(`SELECT DISTINCT chat_jid AS jid FROM campana_marcas WHERE wa_msg_id IS NOT NULL`)
   .all() as { jid: string }[];
-const ultimoSaliente = db.prepare(
-  `SELECT id, ts FROM messages WHERE chat_jid = ? AND from_me = 1 ORDER BY ts DESC, rowid DESC LIMIT 1`
+const primerAutomatico = db.prepare(
+  `SELECT MIN(created_at) AS ts FROM campana_marcas WHERE chat_jid = ? AND wa_msg_id IS NOT NULL`
+);
+const salientesDesde = db.prepare(
+  `SELECT id, ts FROM messages
+    WHERE chat_jid = ? AND from_me = 1 AND ts >= ?
+    ORDER BY ts DESC, rowid DESC LIMIT ?`
 );
 
 /** Réplica exacta de `esDeLaAutomatizacion` (mismas tres consultas, mismo orden). */
@@ -108,18 +132,26 @@ function esDeLaAutomatizacion(waMsgId: string, jid: string, ts: number): boolean
   return !!cerca;
 }
 
-const tomados: string[] = [];
-for (const { jid } of candidatos) {
-  const u = ultimoSaliente.get(jid) as { id: string; ts: number } | undefined;
-  if (!u) continue;
-  const auto = esDeLaAutomatizacion(u.id, jid, u.ts);
-  console.log(`  ${jid}: último saliente ${u.id} (ts ${u.ts}) · automático = ${auto}`);
-  if (jid === "I" && u.id !== "i3") console.log("  ✗ el desempate por rowid no ha cogido el último saliente");
-  if (!auto) tomados.push(jid);
+/** Réplica de `escribioUnHumanoEnLaConversacion`. */
+function laLlevaUnHumano(jid: string): boolean {
+  const desde = (primerAutomatico.get(jid) as { ts: number | null }).ts;
+  if (desde === null) return false;
+  const salientes = salientesDesde.all(jid, desde, 50) as { id: string; ts: number }[];
+  const humanos = salientes.filter((m) => !esDeLaAutomatizacion(m.id, jid, m.ts));
+  console.log(
+    `  ${jid}: ${salientes.length} saliente(s) desde el primer automático (ts ${desde})` +
+      ` · escritos a mano: ${humanos.map((h) => h.id).join(", ") || "ninguno"}`
+  );
+  return humanos.length > 0;
 }
 
-const ESPERADO = "A,E,H,I";
-const real = tomados.join(",");
+const tomados: string[] = [];
+for (const { jid } of candidatos) {
+  if (laLlevaUnHumano(jid)) tomados.push(jid);
+}
+
+const ESPERADO = "A,E,H,I,J";
+const real = tomados.slice().sort().join(",");
 console.log(`\ncandidatos: ${candidatos.map((c) => c.jid).join(",")}  (F no está: no tiene campaña ✓)`);
 console.log(`tomados:    ${real || "(ninguno)"}`);
 const ok = real === ESPERADO;

@@ -65,11 +65,38 @@ function nombreDeChat(row: ChatRow): string {
   return /^\d{6,}$/.test(user) ? `+${user}` : "Contacto sin nombre";
 }
 
+/**
+ * EL OTRO NOMBRE con el que está guardada esta persona, si difiere del que se
+ * enseña.
+ *
+ * ⚠️ Pedido del usuario (08-09-2026): «si hay dos nombres registrados a ese
+ * número mucho cuidado… que se muestre ese otro nombre por el que se guarda».
+ * En el teléfono flotante hay UNA conversación por número, así que si WhatsApp
+ * lo tiene como «Javier Lead SBA» y el CRM como «Javier García Cardeñosa»,
+ * enseñar solo uno hace imposible reconocerlo por el otro. La búsqueda ya casaba
+ * los dos (ver el WHERE de /chats); lo que faltaba era VERLO.
+ *
+ * Se compara sin acentos ni mayúsculas para no enseñar como «otro nombre» lo que
+ * es el mismo escrito distinto.
+ */
+function nombreAlternoDeChat(row: ChatRow): string | null {
+  const wa = (row.display_name ?? "").trim();
+  const crm = (row.lead_name ?? "").trim();
+  if (!wa || !crm) return null;
+  const norm = (s: string) =>
+    s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (norm(wa) === norm(crm)) return null;
+  // Se enseña el que NO se está mostrando. `nombreDeChat` prefiere el de
+  // WhatsApp, así que el alterno es el del CRM.
+  return crm;
+}
+
 function toSummary(row: ChatRow): ChatSummary {
   return {
     jid: row.jid,
     phone: row.phone,
     displayName: nombreDeChat(row),
+    nombreAlterno: nombreAlternoDeChat(row),
     lastMessageAt: row.last_message_at,
     lastMessagePreview: row.last_message_preview,
     unread: row.unread,

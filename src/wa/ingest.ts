@@ -170,7 +170,7 @@ interface IngestResult {
    * mensajes viejos y notificarlos daría de baja a gente por algo que escribió
    * hace meses.
    */
-  entrantes: Array<{ telefono: string; texto: string; jid: string }>;
+  entrantes: Array<{ telefono: string; texto: string; jid: string; waMsgId: string }>;
 }
 
 /**
@@ -229,7 +229,7 @@ function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean; en
         // respuesta de campaña o a darle de baja si pide que no le escribamos.
         if (opts?.enVivo && !msg.key.fromMe && content.type === "text" && content.text) {
           const tel = jidToPhone(jid) ?? (msg.key as { senderPn?: string } | undefined)?.senderPn ?? null;
-          if (tel) entrantes.push({ telefono: tel, texto: content.text, jid });
+          if (tel) entrantes.push({ telefono: tel, texto: content.text, jid, waMsgId: id });
         }
       }
       // Chats `@lid`: el JID no lleva el número, pero Baileys nos da el teléfono
@@ -370,14 +370,59 @@ export function registerIngest(): void {
     }
   });
 
+/**
+ * IDS DE MENSAJE ENTRANTE ya avisados, con caducidad.
+ *
+ * Primera línea de defensa contra el doble aviso. La segunda está en el
+ * dashboard, que guarda el último id procesado por persona — hace falta también
+ * allí porque este mapa se pierde al reiniciar el servicio.
+ */
+const avisados = new Map<string, number>();
+const AVISADO_TTL_MS = 10 * 60_000;
+
+function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: string }>(es: T[]): T[] {
+  const ahora = Date.now();
+  // Limpieza perezosa: sin esto el mapa crece sin techo en un proceso que vive
+  // semanas.
+  if (avisados.size > 5000) {
+    for (const [k, t] of avisados) if (ahora - t > AVISADO_TTL_MS) avisados.delete(k);
+  }
+  const out: T[] = [];
+  for (const e of es) {
+    // La clave lleva el TELÉFONO además del id: el mismo id en dos chats gemelos
+    // es el mismo mensaje de la misma persona, que es justo lo que hay que
+    // colapsar.
+    const clave = `${e.telefono}|${e.waMsgId}`;
+    const visto = avisados.get(clave);
+    if (visto !== undefined && ahora - visto < AVISADO_TTL_MS) {
+      console.log(`[campanas] aviso DUPLICADO ignorado: ${e.telefono} · msg ${e.waMsgId}`);
+      continue;
+    }
+    avisados.set(clave, ahora);
+    out.push(e);
+  }
+  return out;
+}
+
   onWaEvent("messages.upsert", ({ messages, type }) => {
     if (type !== "notify" && type !== "append") return;
     try {
       // Descarga de media SOLO en tráfico "notify" (en vivo, ver comentario de
       // ingestMessages): así una foto/audio recién llegado se guarda al vuelo.
       const result = ingestMessages(messages, { fetchMedia: type === "notify", enVivo: type === "notify" });
-      // Bajas y respuestas de campaña: fuera de la transacción y sin esperar.
-      for (const e of result.entrantes) void avisarEntrante(e.telefono, e.texto, e.jid);
+      /**
+       * Bajas y respuestas de campaña: fuera de la transacción y sin esperar.
+       *
+       * ⚠️ SE DEDUPLICA POR ID DE MENSAJE. La misma persona puede tener DOS chats
+       * (uno `@lid` y uno por teléfono, ver `wa-chats-gemelos`), y el mismo
+       * mensaje entra por los dos: son dos filas en `messages` porque la clave
+       * es (chat_jid, id), así que se insertaban las dos y se avisaba DOS VECES.
+       * Consecuencia real medida en producción: el guion avanzaba dos veces y a
+       * Javier, a Enriqueta y a Julio les llegó la reconducción DUPLICADA.
+       */
+      for (const e of dedupeEntrantes(result.entrantes)) {
+        void avisarEntrante(e.telefono, e.texto, e.jid, e.waMsgId);
+      }
       console.log(
         `[ingest] upsert type=${type} recibidos=${messages.length} guardados=${result.touched.size}` +
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")

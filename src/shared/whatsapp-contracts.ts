@@ -53,6 +53,19 @@ export interface ChatSummary {
   /** Teléfono canónico ES (9 dígitos) o null si internacional/no parseable. */
   phone: string | null;
   displayName: string;
+  /**
+   * EL OTRO NOMBRE con el que esta persona está guardada, si difiere del que se
+   * enseña.
+   *
+   * ⚠️ Pedido por el usuario (08-09-2026): «si hay dos nombres registrados a ese
+   * número mucho cuidado… que se muestre ese otro nombre por el que se guarda,
+   * para a la hora de buscarlo encontrarlo por cualquiera de ellos». En el
+   * teléfono flotante hay UNA conversación por número, así que si WhatsApp lo
+   * tiene guardado como «Javier Lead SBA» y el CRM como «Javier García
+   * Cardeñosa», enseñar solo uno de los dos hace imposible reconocerlo por el
+   * otro. La búsqueda ya casaba los dos; lo que faltaba era VERLO.
+   */
+  nombreAlterno?: string | null;
   lastMessageAt: number | null;
   lastMessagePreview: string | null;
   /** Mensajes entrantes posteriores a last_opened_at (contador LOCAL, no read-receipts). */

@@ -38,7 +38,7 @@ function token(): string | null {
   return process.env.FRANSUA_INTERNAL_TOKEN ?? null;
 }
 
-export async function avisarEntrante(telefono: string, texto: string, jid: string): Promise<void> {
+export async function avisarEntrante(telefono: string, texto: string, jid: string, waMsgId?: string): Promise<void> {
   const t = token();
   if (!t) return;
   /**
@@ -58,7 +58,7 @@ export async function avisarEntrante(telefono: string, texto: string, jid: strin
     const res = await fetch(`${config.dashboardUrl}/api/campanas/worker/baja`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-fransua-token": t },
-      body: JSON.stringify({ telefono, texto: texto.slice(0, 1000), clase: pista?.clase ?? null }),
+      body: JSON.stringify({ telefono, texto: texto.slice(0, 1000), clase: pista?.clase ?? null, waMsgId: waMsgId ?? null }),
       signal: AbortSignal.timeout(12_000),
     });
     if (!res.ok) return;

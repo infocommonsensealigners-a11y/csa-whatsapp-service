@@ -181,6 +181,20 @@ interface IngestResult {
  * necesarias en su inmensa mayoría (auditoría 2026-08-06), así que el intento
  * fallaría casi siempre y solo el tráfico en vivo importa de verdad.
  */
+/**
+ * `senderPn` → TELÉFONO canónico de 9 dígitos.
+ *
+ * Baileys lo da como jid ("34657955578@s.whatsapp.net"), pero también puede
+ * llegar sin sufijo. Se aceptan las dos formas y se devuelve null si no sale un
+ * móvil español utilizable: es mejor perder el aviso que mandarle el guion a un
+ * número inventado.
+ */
+function telefonoDeSenderPn(senderPn: string | null): string | null {
+  if (!senderPn) return null;
+  const conArroba = senderPn.includes("@") ? senderPn : `${senderPn}@s.whatsapp.net`;
+  return jidToPhone(conArroba);
+}
+
 function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean; enVivo?: boolean }): IngestResult {
   const db = getDb();
   const stmts = statements();
@@ -228,7 +242,22 @@ function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean; en
         // Nos ha escrito ALGUIEN, en vivo y con texto: candidato a marcar
         // respuesta de campaña o a darle de baja si pide que no le escribamos.
         if (opts?.enVivo && !msg.key.fromMe && content.type === "text" && content.text) {
-          const tel = jidToPhone(jid) ?? (msg.key as { senderPn?: string } | undefined)?.senderPn ?? null;
+          /**
+           * ⚠️ `senderPn` ES UN JID, no un teléfono: llega como
+           * "34657955578@s.whatsapp.net". Se pasaba EN CRUDO como `telefono`, y
+           * el dashboard lo canonizaba a "+34657955578" —11 dígitos, así que lo
+           * tomaba por un internacional— que NO casa con el "657955578"
+           * guardado en la campaña.
+           *
+           * Consecuencia medida en producción: TODA respuesta que entraba por un
+           * chat `@lid` se descartaba en silencio. `campanasConversacionalesDe`
+           * no encontraba a nadie, el guion no avanzaba y no se conseguía
+           * ninguna dirección postal — que es el objetivo entero de la campaña.
+           * En los logs se veía la IA clasificando "34657955578@s.whatsapp.net"
+           * como si ese fuera el número de alguien.
+           */
+          const senderPnRaw = (msg.key as { senderPn?: string } | undefined)?.senderPn ?? null;
+          const tel = jidToPhone(jid) ?? telefonoDeSenderPn(senderPnRaw);
           if (tel) entrantes.push({ telefono: tel, texto: content.text, jid, waMsgId: id });
         }
       }

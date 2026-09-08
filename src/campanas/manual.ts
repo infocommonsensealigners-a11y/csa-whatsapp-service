@@ -165,15 +165,15 @@ function telefonoDeChat(jid: string): string | null {
  * Avisa al dashboard de que este chat lo lleva un humano, y deja en el chat las
  * notas que devuelva para que se vean en el teléfono flotante.
  */
-async function avisarDashboard(jid: string, actor: string | null): Promise<void> {
+async function avisarDashboard(jid: string, actor: string | null): Promise<boolean> {
   const t = token();
-  if (!t) return;
+  if (!t) return false;
   const telefono = telefonoDeChat(jid);
-  if (!telefono) return;
+  if (!telefono) return false;
 
   const ahora = Date.now();
   const visto = avisados.get(telefono);
-  if (visto !== undefined && ahora - visto < AVISO_TTL_MS) return;
+  if (visto !== undefined && ahora - visto < AVISO_TTL_MS) return true;
   avisados.set(telefono, ahora);
   if (avisados.size > 3000) {
     for (const [k, v] of avisados) if (ahora - v > AVISO_TTL_MS) avisados.delete(k);
@@ -187,7 +187,18 @@ async function avisarDashboard(jid: string, actor: string | null): Promise<void>
       body: JSON.stringify({ telefono, actor }),
       signal: AbortSignal.timeout(12_000),
     });
-    if (!res.ok) return;
+    /**
+     * ⚠️ UN 404 O UN 502 NO ES UN "NO HAY NADA QUE PARAR": es que el dashboard
+     * está desplegando. Hay que OLVIDAR el teléfono para volver a intentarlo,
+     * igual que con un fallo de red. Darlo por avisado dejaría la
+     * automatización suelta 15 minutos justo en un chat que lleva una persona —
+     * y el repaso del arranque, que corre una sola vez, se perdería entero si
+     * cae mientras el dashboard reinicia.
+     */
+    if (!res.ok) {
+      avisados.delete(telefono);
+      return false;
+    }
     j = (await res.json()) as RespuestaManual;
   } catch {
     /**
@@ -197,9 +208,13 @@ async function avisarDashboard(jid: string, actor: string | null): Promise<void>
      * el que un humano está escribiendo.
      */
     avisados.delete(telefono);
-    return;
+    return false;
   }
-  if (!j?.success || !j.tomas?.length) return;
+  if (!j?.success) {
+    avisados.delete(telefono);
+    return false;
+  }
+  if (!j.tomas?.length) return true;
 
   for (const toma of j.tomas) {
     /**
@@ -215,6 +230,7 @@ async function avisarDashboard(jid: string, actor: string | null): Promise<void>
     `[campanas] TOMA MANUAL en ${telefono}: parada${(j.paradas ?? 0) === 1 ? "" : "s"} ${j.paradas ?? 0} conversación(es)` +
       (actor ? ` · a mano por ${actor}` : " · escrito desde el WhatsApp de Fran"),
   );
+  return true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -316,13 +332,46 @@ export function repasarTomasManuales(): void {
       return;
     }
     console.log(`[campanas] repaso de tomas manuales: ${tomados.length} chat(s) los lleva un humano. Parando la automatización ahí.`);
-    // De uno en uno y con calma: son avisos, no hay ninguna prisa.
-    void (async () => {
-      for (const jid of tomados) {
-        await avisarDashboard(jid, null).catch(() => {});
-        await new Promise((r) => setTimeout(r, 500));
-      }
-    })();
+    void avisarPorLotes(tomados, 1);
   }, REPASO_MS);
+  t.unref?.();
+}
+
+/** Reintentos del repaso, en minutos. Ver `avisarPorLotes`. */
+const REINTENTOS_MIN = [2, 6, 15];
+
+/**
+ * Avisa de una lista de chats, de uno en uno, y REINTENTA los que fallen.
+ *
+ * ⚠️ El reintento no es celo: el repaso corre UNA vez al arrancar, y el arranque
+ * del sidecar coincide casi siempre con un despliegue del dashboard —los dos
+ * repos se despliegan juntos—. Sin reintento, un 404 de treinta segundos se
+ * llevaba por delante toda la protección retroactiva hasta el siguiente
+ * reinicio, que puede ser dentro de días.
+ */
+async function avisarPorLotes(jids: string[], vuelta: number): Promise<void> {
+  const fallidos: string[] = [];
+  for (const jid of jids) {
+    const ok = await avisarDashboard(jid, null).catch(() => false);
+    if (!ok) fallidos.push(jid);
+    // De uno en uno y con calma: son avisos, no hay ninguna prisa.
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (fallidos.length === 0) {
+    console.log(`[campanas] repaso de tomas manuales: avisados todos (vuelta ${vuelta}).`);
+    return;
+  }
+  const espera = REINTENTOS_MIN[vuelta - 1];
+  if (espera === undefined) {
+    console.warn(
+      `[campanas] repaso de tomas manuales: ${fallidos.length} chat(s) sin avisar tras ${vuelta} vueltas. ` +
+        "El tope de mensajes sigue protegiendo; se reintentará al próximo arranque.",
+    );
+    return;
+  }
+  console.warn(
+    `[campanas] repaso de tomas manuales: ${fallidos.length} sin avisar (¿dashboard desplegando?). Reintento en ${espera} min.`,
+  );
+  const t = setTimeout(() => void avisarPorLotes(fallidos, vuelta + 1), espera * 60_000);
   t.unref?.();
 }

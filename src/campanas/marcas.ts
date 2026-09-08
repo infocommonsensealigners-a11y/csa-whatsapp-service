@@ -47,9 +47,21 @@ export function registrarAutomatico(jid: string, waMsgId: string, campana: strin
     ensureTabla();
     getDb()
       .prepare(
+        /**
+         * ⚠️ El `WHERE wa_msg_id IS NOT NULL` del ON CONFLICT no es adorno: hay
+         * que REPETIR la cláusula del índice parcial o SQLite no lo reconoce y
+         * lanza "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE
+         * constraint".
+         *
+         * Sin él, esta consulta fallaba SIEMPRE y el catch de abajo se lo
+         * tragaba: la marca de agua no se registró ni una vez, así que en el
+         * teléfono flotante un mensaje de la automatización y uno escrito por
+         * Fran eran indistinguibles. Se vio en los logs de producción con el
+         * primer envío real de la campaña del taller.
+         */
         `INSERT INTO campana_marcas (chat_jid, wa_msg_id, campana, campana_id, nota, created_at)
          VALUES (?, ?, ?, ?, NULL, ?)
-         ON CONFLICT(wa_msg_id) DO NOTHING`
+         ON CONFLICT(wa_msg_id) WHERE wa_msg_id IS NOT NULL DO NOTHING`
       )
       .run(jid, waMsgId, campana, campanaId, ahora());
   } catch (e) {

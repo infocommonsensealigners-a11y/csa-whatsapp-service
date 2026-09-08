@@ -76,14 +76,20 @@ async function pedirSiguiente(): Promise<RespuestaSiguiente | null> {
   }
 }
 
-async function contarResultado(e: EnvioPendiente, ok: boolean, error?: string): Promise<void> {
+async function contarResultado(e: EnvioPendiente, ok: boolean, error?: string, codigo?: string): Promise<void> {
   const t = token();
   if (!t) return;
   try {
     await fetch(`${config.dashboardUrl}/api/campanas/worker/resultado`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-fransua-token": t },
-      body: JSON.stringify({ campanaId: e.campanaId, telefono: e.telefono, ok, error }),
+      /**
+       * `codigo` viaja para que el dashboard pueda decidir QUE cuenta para la
+       * autopausa. "unknown-chat" (ese numero no esta en WhatsApp) es un
+       * problema del dato de ese lead, no una senal de que la cuenta este en
+       * apuros: tres numeros malos seguidos no deben parar la campana.
+       */
+      body: JSON.stringify({ campanaId: e.campanaId, telefono: e.telefono, ok, error, codigo }),
       signal: AbortSignal.timeout(10_000),
     });
   } catch {
@@ -129,7 +135,7 @@ async function ciclo(): Promise<number> {
     return ESPERA_OFFLINE_MS;
   }
 
-  await contarResultado(e, false, res.error);
+  await contarResultado(e, false, res.error, res.code);
   console.warn(`[campanas] FALLÓ a ${e.telefono} (${res.code}): ${res.error}`);
   return POLL_MIN_MS;
 }

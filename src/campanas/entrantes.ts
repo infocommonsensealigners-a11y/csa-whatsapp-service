@@ -14,6 +14,7 @@
 import { config } from "../config";
 import { sendText } from "../wa/send";
 import { registrarAutomatico, registrarNota } from "./marcas";
+import { clasificarConIA } from "./clasificar";
 
 interface EnvioConversacional {
   campanaId: string;
@@ -40,12 +41,24 @@ function token(): string | null {
 export async function avisarEntrante(telefono: string, texto: string, jid: string): Promise<void> {
   const t = token();
   if (!t) return;
+  /**
+   * CLASIFICACIÓN CON IA de lo que ha contestado, como PISTA para el dashboard.
+   *
+   * Solo lee: los textos que salen siguen siendo los fijos del guion. Y el
+   * dashboard la usa únicamente cuando sus propias reglas dicen "confuso", así
+   * que esto puede rescatar casos pero nunca contradecir una baja ni convertir
+   * un "no" detectado en un "sí". Si la IA falla, `pista` va vacía y todo sigue
+   * como antes.
+   */
+  const pista = await clasificarConIA(texto, "¿Te apuntaste al taller?").catch(() => null);
+  if (pista) console.log(`[campanas] ${telefono} → IA dice "${pista.clase}" (${pista.porque})`);
+
   let j: Respuesta | null = null;
   try {
     const res = await fetch(`${config.dashboardUrl}/api/campanas/worker/baja`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-fransua-token": t },
-      body: JSON.stringify({ telefono, texto: texto.slice(0, 1000) }),
+      body: JSON.stringify({ telefono, texto: texto.slice(0, 1000), clase: pista?.clase ?? null }),
       signal: AbortSignal.timeout(12_000),
     });
     if (!res.ok) return;

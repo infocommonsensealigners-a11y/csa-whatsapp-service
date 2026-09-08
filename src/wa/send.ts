@@ -21,6 +21,7 @@
 import { getDb } from "../db/db";
 import { emitSse } from "../http/sse";
 import { isStorableChatJid, jidToPhone } from "./jidPhone";
+import { avisarSalienteManual } from "../campanas/manual";
 import { getActiveSocket, lookupLids } from "./socket";
 import { MEDIA_MAX_BYTES, extFromMime, saveMediaBuffer } from "./mediaStore";
 
@@ -185,6 +186,16 @@ export async function sendText(
       `INSERT INTO wa_send_audit (chat_jid, actor, chars, wa_msg_id, created_at, kind) VALUES (?, ?, ?, ?, ?, 'text')`
     ).run(jid, actor, text.length, id, ts);
 
+    /**
+     * ⚠️ TOMA MANUAL: si esto NO lo manda la automatización, lo manda una
+     * persona, y entonces la automatización tiene que retirarse de este chat.
+     * Petición del usuario (2026-09-08): «si mi compañero lo toma en manual se
+     * para el automático». Se avisa aquí, en el único punto por el que sale
+     * cualquier mensaje de este servicio, para que no haya forma de escribir a
+     * mano por un camino que se lo salte.
+     */
+    avisarSalienteManual(jid, actor);
+
     emitSse({ type: "message.new", jid });
     console.log(`[send] ${actor ?? "?"} → ${jidToPhone(jid) ?? jid} (${text.length} chars)`);
     return { ok: true, message: { id, chatJid: jid, fromMe: true, ts, type: "text", text, mediaUrl: null } };
@@ -262,6 +273,9 @@ export async function sendMedia(jid: string, input: SendMediaInput, actor: strin
     db.prepare(
       `INSERT INTO wa_send_audit (chat_jid, actor, chars, wa_msg_id, created_at, kind, bytes) VALUES (?, ?, 0, ?, ?, ?, ?)`
     ).run(jid, actor, id, ts, input.ptt ? "ptt" : input.kind, input.buffer.byteLength);
+
+    // Un adjunto a mano también es una toma manual (ver sendText).
+    avisarSalienteManual(jid, actor);
 
     emitSse({ type: "message.new", jid });
     console.log(`[send] ${actor ?? "?"} → ${jidToPhone(jid) ?? jid} (${input.kind}, ${(input.buffer.byteLength / 1024).toFixed(0)} KB)`);

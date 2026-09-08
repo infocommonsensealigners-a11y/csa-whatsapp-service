@@ -14,6 +14,7 @@ import { startLeadLinkingScheduler } from "./brain/linkLeadsScheduler";
 import { startBackupScheduler } from "./brain/backup";
 import { startLearningScheduler } from "./brain/learning";
 import { arrancarWorkerCampanas } from "./campanas/worker";
+import { repasarTomasManuales } from "./campanas/manual";
 
 async function main(): Promise<void> {
   ensureDataDirs();
@@ -97,6 +98,17 @@ async function main(): Promise<void> {
     arrancarWorkerCampanas();
   } catch (e) {
     console.error("[campanas] no se pudo arrancar el worker:", (e as Error).message);
+  }
+
+  /**
+   * Repaso de TOMAS MANUALES anteriores a este arranque: chats de campaña en los
+   * que el último mensaje que salió lo escribió una persona. Ver
+   * `campanas/manual.ts`. No envía nada a nadie: solo para la automatización.
+   */
+  try {
+    repasarTomasManuales();
+  } catch (e) {
+    console.error("[campanas] no se pudo repasar las tomas manuales:", (e as Error).message);
   }
 
   console.log(`[http] Sidecar WhatsApp escuchando en http://${config.host}:${config.port}`);

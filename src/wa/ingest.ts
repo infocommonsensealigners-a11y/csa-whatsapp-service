@@ -13,6 +13,7 @@ import { getDb, setMeta } from "../db/db";
 import { emitSse } from "../http/sse";
 import { isStorableChatJid, jidToPhone } from "./jidPhone";
 import { avisarEntrante } from "../campanas/entrantes";
+import { encolarSalientePorSiEsManual } from "../campanas/manual";
 import { recordLidFromKey } from "./lidMap";
 import { applyWaRead } from "./readState";
 import { onWaEvent, downloadMedia } from "./socket";
@@ -171,6 +172,17 @@ interface IngestResult {
    * hace meses.
    */
   entrantes: Array<{ telefono: string; texto: string; jid: string; waMsgId: string }>;
+  /**
+   * Mensajes SALIENTES recien insertados: candidatos a ser una TOMA MANUAL (un
+   * companero escribiendo a mano en un chat de campana).
+   *
+   * Solo llegan aqui los que NO estaban ya en la base, y todo lo que sale por
+   * este servicio se guarda antes del eco: asi que en la practica son los
+   * escritos desde el WhatsApp de Fran (movil, WhatsApp Web, otro dispositivo).
+   * Aun asi NO se dan por manuales aqui — se comprueba contra la marca de agua
+   * con retardo, ver `campanas/manual.ts`.
+   */
+  salientes: Array<{ jid: string; waMsgId: string; ts: number }>;
 }
 
 /**
@@ -195,13 +207,17 @@ function telefonoDeSenderPn(senderPn: string | null): string | null {
   return jidToPhone(conArroba);
 }
 
-function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean; enVivo?: boolean }): IngestResult {
+function ingestMessages(
+  messages: WAMessage[],
+  opts?: { fetchMedia?: boolean; enVivo?: boolean; detectarManual?: boolean },
+): IngestResult {
   const db = getDb();
   const stmts = statements();
   const touched = new Set<string>();
   const seen = new Set<string>();
   const mediaCandidates: IngestResult["mediaCandidates"] = [];
   const entrantes: IngestResult["entrantes"] = [];
+  const salientes: IngestResult["salientes"] = [];
   const now = Math.floor(Date.now() / 1000);
   /** jid `@lid` → teléfono que venía en key.senderPn (se aplica tras la transacción). */
   const lidPending = new Map<string, string>();
@@ -260,6 +276,16 @@ function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean; en
           const tel = jidToPhone(jid) ?? telefonoDeSenderPn(senderPnRaw);
           if (tel) entrantes.push({ telefono: tel, texto: content.text, jid, waMsgId: id });
         }
+        /**
+         * SALIENTE nuevo: candidato a toma manual. Se recoge de cualquier tipo
+         * (una foto mandada a mano tambien es coger la conversacion) y sin
+         * juzgar nada: quien decide si era la automatizacion o una persona es
+         * `campanas/manual.ts`, y con retardo, porque este eco puede adelantar
+         * a la marca de agua del propio envio automatico.
+         */
+        if (opts?.detectarManual && msg.key.fromMe) {
+          salientes.push({ jid, waMsgId: id, ts });
+        }
       }
       // Chats `@lid`: el JID no lleva el número, pero Baileys nos da el teléfono
       // real en key.senderPn → se materializa el mapeo y se rellena chats.phone
@@ -271,7 +297,7 @@ function ingestMessages(messages: WAMessage[], opts?: { fetchMedia?: boolean; en
   run(messages);
   // Fuera de la transacción de mensajes (recordLidFromKey abre las suyas).
   for (const [jid, pn] of lidPending) recordLidFromKey(jid, pn);
-  return { touched, seen, mediaCandidates, entrantes };
+  return { touched, seen, mediaCandidates, entrantes, salientes };
 }
 
 /**
@@ -438,7 +464,18 @@ function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: s
     try {
       // Descarga de media SOLO en tráfico "notify" (en vivo, ver comentario de
       // ingestMessages): así una foto/audio recién llegado se guarda al vuelo.
-      const result = ingestMessages(messages, { fetchMedia: type === "notify", enVivo: type === "notify" });
+      /**
+       * `detectarManual` va en "notify" Y en "append": un mensaje escrito desde
+       * el movil de Fran puede entrar por cualquiera de los dos, y perderselo
+       * significa que la automatizacion siga hablando encima de el. La
+       * proteccion contra juzgar mensajes viejos no es el tipo de evento, es la
+       * comprobacion de FRESCURA de `encolarSalientePorSiEsManual`.
+       */
+      const result = ingestMessages(messages, {
+        fetchMedia: type === "notify",
+        enVivo: type === "notify",
+        detectarManual: true,
+      });
       /**
        * Bajas y respuestas de campaña: fuera de la transacción y sin esperar.
        *
@@ -452,6 +489,12 @@ function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: s
       for (const e of dedupeEntrantes(result.entrantes)) {
         void avisarEntrante(e.telefono, e.texto, e.jid, e.waMsgId);
       }
+      /**
+       * TOMA MANUAL: un mensaje que sale sin marca de automatico lo ha escrito
+       * una persona, y entonces la automatizacion se retira de ese chat
+       * (peticion del usuario 2026-09-08). Se encola, no se decide aqui.
+       */
+      for (const s of result.salientes) encolarSalientePorSiEsManual(s);
       console.log(
         `[ingest] upsert type=${type} recibidos=${messages.length} guardados=${result.touched.size}` +
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")

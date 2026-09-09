@@ -14,6 +14,7 @@
 import { config } from "../config";
 import { getDb, setMeta } from "../db/db";
 import { runLeadLinking, type DatasetLead, type NoMatchChat } from "./linkLeads";
+import { desvincularEnIntel } from "./intelDesvincular";
 
 const DASH_URL = process.env.DASH_URL ?? "http://localhost:3210";
 const DASH_EMAIL = process.env.DASH_EMAIL;
@@ -121,6 +122,22 @@ async function tick(): Promise<void> {
   );
   if (r.ambiguous.length) {
     console.log(`[link-leads] ambiguos pendientes de resolver a mano: ${r.ambiguous.length}`);
+  }
+
+  /**
+   * ⚠️ Y se limpia la COPIA de los enlaces retirados. Quitarlos de
+   * `chat_lead_links` no basta: la ficha del lead lee `chat_intel.source_row`
+   * de Supabase, y eso solo se reescribe cuando ese chat se vuelve a analizar.
+   * Ver intelDesvincular.ts.
+   */
+  if (r.removedPairs.length > 0) {
+    const limpiadas = await desvincularEnIntel(r.removedPairs).catch((e) => {
+      console.error("[link-leads] desvincularEnIntel falló:", (e as Error).message);
+      return 0;
+    });
+    console.log(
+      `[link-leads] copia en chat_intel: ${limpiadas} de ${r.removedPairs.length} desvinculada(s) en Supabase.`
+    );
   }
   // Persistido para que GET /link-leads/ambiguous (rutas HTTP) lo sirva sin
   // tener que re-ejecutar el matching completo en cada petición.

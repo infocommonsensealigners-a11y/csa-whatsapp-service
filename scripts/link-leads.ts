@@ -14,6 +14,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import { runLeadLinking, type DatasetLead } from "../src/brain/linkLeads";
+import { desvincularEnIntel } from "../src/brain/intelDesvincular";
 
 const DASH_URL = process.env.DASH_URL ?? "http://localhost:3210";
 const DASH_EMAIL = process.env.DASH_EMAIL ?? "miguelangel@ortodoncialozano.es";
@@ -53,6 +54,18 @@ async function main() {
   console.log(`  · sin teléfono (@lid/intl), por NOMBRE → vinculados: ${r.chatsLinkedByName} · sin lead: ${r.chatsNoLeadByName} · AMBIGUOS (sin linkar): ${r.chatsAmbiguousByName}`);
   console.log(`  enlaces auto activos escritos: ${r.linkCount}`);
   console.log(`  enlaces auto obsoletos desactivados: ${r.removed}`);
+
+  /**
+   * La COPIA en Supabase. Va aquí y no dentro de runLeadLinking porque ese
+   * modulo es puro respecto a la red; y va TAMBIEN aquí y no solo en el
+   * scheduler para que correr el script a mano deje el sistema en el mismo
+   * estado que la pasada automática — dos caminos con distinto resultado es
+   * como se acumulan los misterios. Ver src/brain/intelDesvincular.ts.
+   */
+  if (r.removedPairs.length > 0) {
+    const limpiadas = await desvincularEnIntel(r.removedPairs).catch(() => 0);
+    console.log(`  copia en chat_intel desvinculada: ${limpiadas} de ${r.removedPairs.length}`);
+  }
   if (r.ambiguous.length) {
     console.log(`\n  Ambiguos por nombre (pendientes de resolver a mano):`);
     for (const a of r.ambiguous.slice(0, 30)) {

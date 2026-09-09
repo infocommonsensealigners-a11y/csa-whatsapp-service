@@ -6,12 +6,20 @@
  * segunda conexión a la BD — recibe la conexión ya abierta del proceso.
  *
  * Dos vías de matching, mismo criterio que el script manual:
- *   1. Teléfono canónico ES (9 díg.) — un teléfono duplicado en el Sheet SÍ
- *      linka a todos los leads que lo comparten (señal fuerte).
- *   2. Por nombre (nombre completo exacto normalizado; si el nombre de
- *      WhatsApp es una sola palabra, también por nombre de pila) — un nombre
- *      con MÁS de una coincidencia NO se linka a ciegas, se reporta como
- *      ambiguo para resolver a mano.
+ *   1. Teléfono canónico ES (9 díg.) o internacional completo — un teléfono
+ *      duplicado en el Sheet SÍ linka a todos los leads que lo comparten
+ *      (señal fuerte).
+ *   2. Por NOMBRE COMPLETO exacto normalizado, y solo como rescate. Tres cosas
+ *      lo vetan, y en este orden: que el teléfono del chat y el del lead se
+ *      conozcan y NO coincidan; que la única coincidencia sea el nombre de
+ *      pila; y que haya más de un candidato. Los tres casos se reportan como
+ *      ambiguos para resolver a mano, nunca se linkan a ciegas.
+ *
+ * ⚠️ LA REGLA QUE GOBIERNA TODO ESTO: un enlace equivocado es PEOR que ninguno.
+ * Sin enlace, la ficha se ve vacía y se resuelve en Ajustes con un clic. Con un
+ * enlace equivocado, la ficha muestra la conversación de un desconocido y
+ * Fransua razona sobre ella — le pasó a «Ramon» el 9-sep-2026 (ver
+ * scripts/test-link-leads.ts, que reproduce el caso).
  *
  * Idempotente: re-ejecutar actualiza; los enlaces 'manual' NO se tocan; los
  * 'auto' que ya no casen se marcan 'removed'.
@@ -41,6 +49,18 @@ export interface LinkLeadsResult {
   dirCount: number;
   linkCount: number;
   removed: number;
+  /**
+   * Los pares (chat, lead) que esta pasada ha DESACTIVADO.
+   *
+   * ⚠️ Hacen falta porque la asociación vive en DOS sitios: aquí, en
+   * `chat_lead_links`, y copiada en `chat_intel.source_row` de Supabase, que es
+   * de donde lee la ficha del lead (`GET /intel/by-lead/:sourceRow`). Retirar
+   * el enlace local no limpia la copia: `analyzeChat` solo la reescribe cuando
+   * ese chat se vuelve a analizar, y un chat muerto de 2024 puede no analizarse
+   * nunca más. Sin esta lista, un enlace equivocado se quita de la base y sigue
+   * viéndose en la ficha para siempre.
+   */
+  removedPairs: { jid: string; sourceRow: number }[];
   chatsTotal: number;
   chatsLinked: number;
   chatsMulti: number;
@@ -159,16 +179,24 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
     if (first) (byFirstToken.get(first) ?? byFirstToken.set(first, []).get(first)!).push(rec);
   }
 
-  function matchByName(displayName: string | null): NameCandidate[] {
+  /**
+   * Candidatos por nombre, DICIENDO de qué fuerza es la coincidencia.
+   *
+   * `soloNombreDePila` es la diferencia entre «María Teresa Rodríguez» casando
+   * con «María Teresa Rodríguez» y «Ramon» casando con «Ramon»: lo segundo es
+   * un nombre de pila suelto y no identifica a nadie. Antes las dos vías
+   * devolvían lo mismo y se trataban igual.
+   */
+  function matchByName(displayName: string | null): { matches: NameCandidate[]; soloNombreDePila: boolean } {
     const norm = normName(displayName);
-    if (!norm) return [];
+    if (!norm) return { matches: [], soloNombreDePila: false };
     const exact = byFullName.get(norm);
-    if (exact && exact.length) return exact;
+    if (exact && exact.length) return { matches: exact, soloNombreDePila: !norm.includes(" ") };
     if (!norm.includes(" ")) {
       const byFirst = byFirstToken.get(norm);
-      if (byFirst && byFirst.length) return byFirst;
+      if (byFirst && byFirst.length) return { matches: byFirst, soloNombreDePila: true };
     }
-    return [];
+    return { matches: [], soloNombreDePila: false };
   }
 
   const upDir = db.prepare(
@@ -239,7 +267,7 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
      * "Javi/Esther/Mónica/Marisol", donde el lead ya tenía la suya).
      */
     const linkByName = (c: { jid: string; phone: string | null; display_name: string | null }): boolean => {
-      const matches = matchByName(c.display_name);
+      const { matches, soloNombreDePila } = matchByName(c.display_name);
       if (matches.length === 0) {
         chatsNoLeadByName++;
         noMatch.push({ jid: c.jid, display_name: c.display_name, phone: c.phone });
@@ -255,6 +283,62 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
         return false;
       }
       const m = matches[0];
+
+      /**
+       * ⚠️ BARRERA 1 — TELÉFONO DISCORDANTE = VETO. Va primero porque es la
+       * señal más fuerte que hay, y su ausencia causó el fallo que trae todo
+       * esto (usuario, 9-sep-2026).
+       *
+       * Qué pasó: el chat `@lid` de «Ramon» tenía su teléfono ya rescatado
+       * (631317185), ese número no está en el Sheet, y entonces el bucle de
+       * abajo «rescata» por nombre — sin mirar que el único Ramon del CRM tiene
+       * OTRO teléfono (659544123). Resultado: en la ficha de un lead nuevo de
+       * PUBLI ESTAN apareció una conversación de abril de 2024 sobre la
+       * certificación de Invisalign que era de un desconocido, y Fransua razonó
+       * sobre ella como si fuera suya.
+       *
+       * Si conocemos los dos teléfonos y NO son el mismo, es otra persona. No
+       * hay nombre que valga: eso no se decide, se veta.
+       */
+      const claveChat = chatPhoneKey(c);
+      const claveLead = leadPhoneKey.get(m.sourceRow);
+      if (claveChat && claveLead && claveChat !== claveLead) {
+        chatsAmbiguousByName++;
+        ambiguous.push({
+          jid: c.jid,
+          display_name: c.display_name,
+          candidatos: [
+            `${m.name} (fila ${m.sourceRow}) — NO se casa: su teléfono es ${claveLead} y el de este chat es ${claveChat}`,
+          ],
+        });
+        return false;
+      }
+
+      /**
+       * ⚠️ BARRERA 2 — UN NOMBRE DE PILA SOLO NO IDENTIFICA A NADIE.
+       *
+       * Es la otra mitad del caso Ramon: hoy hay un «Ramon» en el CRM y el
+       * enlace se hacía a ciegas sobre él; mañana hay dos y ya estaba hecho. Un
+       * nombre completo («María Teresa Rodríguez») sí es evidencia; un nombre de
+       * pila es una coincidencia.
+       *
+       * No se descarta el candidato: se manda a revisión CON su nombre, para que
+       * resolverlo a mano sea un clic. Y a `ambiguous` y no a `noMatch` a
+       * propósito — `noMatch` alimenta el auto-alta de fichas, y ahí crearía un
+       * duplicado de alguien que ya está en el CRM.
+       */
+      if (soloNombreDePila) {
+        chatsAmbiguousByName++;
+        ambiguous.push({
+          jid: c.jid,
+          display_name: c.display_name,
+          candidatos: [
+            `${m.name} (fila ${m.sourceRow}) — solo coincide el NOMBRE DE PILA: hace falta confirmarlo a mano`,
+          ],
+        });
+        return false;
+      }
+
       if (yaTieneConversacion(m.sourceRow)) {
         // Ese lead ya tiene su conversación: este chat es de otra persona con
         // el mismo nombre (o un segundo número). A revisión manual, no a ciegas.
@@ -295,21 +379,23 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
       }
       linkByName(c);
     }
-    let removed = 0;
+    const pares: { jid: string; sourceRow: number }[] = [];
     for (const l of staleLinks.all() as { chat_jid: string; source_row: number }[]) {
       if (!wanted.has(`${l.chat_jid}|${l.source_row}`)) {
         markRemoved.run({ jid: l.chat_jid, sourceRow: l.source_row, now });
-        removed++;
+        pares.push({ jid: l.chat_jid, sourceRow: l.source_row });
       }
     }
-    return removed;
+    return pares;
   });
-  const removed = tx();
+  const removedPairs = tx();
+  const removed = removedPairs.length;
 
   return {
     dirCount,
     linkCount,
     removed,
+    removedPairs,
     chatsTotal: chats.length,
     chatsLinked,
     chatsMulti,

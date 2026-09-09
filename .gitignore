@@ -9,3 +9,19 @@ data/
 
 node_modules/
 *.log
+
+# ─── Añadido 2026-09-09 ───────────────────────────────────────────────────────
+# Compilados. Hoy el servicio corre con tsx (no hay `npm run build`), pero si
+# algún día se compila, que no acabe versionado.
+dist/
+.next/
+*.tsbuildinfo
+
+# BACKUPS/ y los .zip: copias de seguridad, a veces de gigas. Nunca al repo.
+BACKUPS/
+*.zip
+
+# Herramientas y ruido del sistema
+.claude/
+.vscode/
+.DS_Store

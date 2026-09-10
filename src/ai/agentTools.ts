@@ -29,6 +29,9 @@ import { insertConPhone } from "../brain/phoneColumn";
 import { logActionAudit } from "../brain/audit";
 import { storeLeccion } from "../brain/lecciones";
 import { getDb } from "../db/db";
+import { getWaState } from "../wa/socket";
+import { getDireccionesRecogidas } from "../brain/direcciones";
+import { avisoConexion, mensajesDelPeriodo, rangoMadrid, ultimoMensajeTs } from "../brain/mensajesPeriodo";
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -436,6 +439,78 @@ const objecionesClinicas = tool(
   }
 );
 
+/**
+ * LEER WHATSAPP POR FECHAS (10-09-2026). Fran preguntó «¿las direcciones
+ * postales que hemos recogido por WhatsApp desde ayer?» y Fransua contestó que
+ * no tenía forma de saberlo: solo veía resúmenes por lead y búsqueda por tema.
+ * Dos herramientas:
+ *  · direcciones_postales — el dato ESTRUCTURADO que ya guarda el dashboard
+ *    (campañas + fichas), con CP y origen.
+ *  · mensajes_whatsapp — los mensajes LITERALES de un periodo, filtrables, para
+ *    cualquier pregunta que exija leer lo que se dijo en unas fechas.
+ * Las dos avisan si WhatsApp está desconectado: sin eso, «no hay nada desde
+ * ayer» sería mentira por omisión.
+ */
+const FECHA_DESDE = z
+  .string()
+  .describe("inicio: 'AAAA-MM-DD' (día en Madrid, desde las 00:00) o ISO. Resuélvelo con el HOY del prompt: «desde ayer» = la fecha de ayer; «esta semana» = el lunes.");
+const FECHA_HASTA = z
+  .string()
+  .optional()
+  .describe("fin: 'AAAA-MM-DD' (incluye ese día ENTERO) o ISO. Por defecto, ahora.");
+
+function avisoWhatsapp(): string | null {
+  try {
+    return avisoConexion(getWaState(), ultimoMensajeTs(getDb()));
+  } catch {
+    return null;
+  }
+}
+
+const direccionesPostales = tool(
+  "direcciones_postales",
+  "Las DIRECCIONES POSTALES recogidas en un periodo: las que los doctores dieron por WhatsApp en las campañas (captadas por la conversación, llegadas tras el cierre o encontradas al repasar el chat) y las apuntadas a mano en la ficha del lead. Trae nombre, teléfono, la dirección tal cual, el código postal (avisa si falta: sin CP el envío no llega), de dónde salió y cuándo. Úsala SIEMPRE para «¿qué direcciones hemos recogido desde ayer / esta semana?» o para preparar envíos (libros, kits).",
+  { desde: FECHA_DESDE, hasta: FECHA_HASTA },
+  async (args: { desde: string; hasta?: string }) => {
+    const r = rangoMadrid(args.desde, args.hasta);
+    if ("error" in r) return txt(r.error);
+    const d = await getDireccionesRecogidas(r.desde, r.hasta);
+    if (!d) return txt("No he podido leer las direcciones del dashboard ahora mismo. No me lo invento: vuelve a preguntarme en un momento.");
+    const aviso = avisoWhatsapp();
+    return txt(
+      `${aviso ? `${aviso}\n\n` : ""}${d.texto}\n\n` +
+        "Esto es lo que el dashboard tiene REGISTRADO. Una dirección dada en un chat FUERA de una campaña no está aquí: " +
+        "si hace falta, búscala con mensajes_whatsapp(dato:\"direccion\") en las mismas fechas."
+    );
+  }
+);
+
+const mensajesWhatsapp = tool(
+  "mensajes_whatsapp",
+  "LEE los mensajes de WhatsApp de un PERIODO — de todas las conversaciones o de un lead — con filtros: palabras que contengan, tipo de dato (direccion | email | codigo_postal) y quién escribe (ellos = los doctores, nosotros = CSA). Devuelve los mensajes LITERALES agrupados por conversación, con nombre, teléfono y hora. Úsala para cualquier pregunta que exija LEER lo que se dijo en unas fechas: «¿quién preguntó por el precio hoy?», «¿qué emails nos han pasado esta semana?», «¿alguien ha mandado su dirección desde ayer?», «¿qué me escribió X el lunes?». TÚ extraes y resumes el dato a partir de los mensajes; si no aparece, dilo.",
+  {
+    desde: FECHA_DESDE,
+    hasta: FECHA_HASTA,
+    contiene: z.string().optional().describe("palabras a buscar (sin distinguir mayúsculas ni acentos); alternativas separadas por '|', p.ej. 'precio|cuanto cuesta|financiacion'"),
+    dato: z.enum(["direccion", "email", "codigo_postal"]).optional().describe("solo mensajes que parezcan traer ese dato"),
+    quien: z.enum(["ellos", "nosotros", "todos"]).optional().describe("por defecto 'ellos' (lo que escriben los doctores)"),
+    lead: z.string().optional().describe("teléfono o nombre, para limitarlo a UNA conversación"),
+  },
+  async (args: { desde: string; hasta?: string; contiene?: string; dato?: "direccion" | "email" | "codigo_postal"; quien?: "ellos" | "nosotros" | "todos"; lead?: string }) => {
+    const r = rangoMadrid(args.desde, args.hasta);
+    if ("error" in r) return txt(r.error);
+    let db: ReturnType<typeof getDb>;
+    try {
+      db = getDb();
+    } catch {
+      return txt("La base de datos de conversaciones no está disponible ahora mismo.");
+    }
+    const texto = mensajesDelPeriodo(db, { desde: r.desde, hasta: r.hasta, contiene: args.contiene, dato: args.dato, quien: args.quien, lead: args.lead });
+    const aviso = avisoWhatsapp();
+    return txt(aviso ? `${aviso}\n\n${texto}` : texto);
+  }
+);
+
 /* -------------------------------------------------------------------------- */
 /* Herramientas de ESCRITURA (por petición: cierran sobre el ACTOR real)      */
 /* -------------------------------------------------------------------------- */
@@ -620,6 +695,8 @@ const READ_TOOL_NAMES = [
   "mcp__fransua__consultar_agenda",
   "mcp__fransua__objeciones_doctores",
   "mcp__fransua__objeciones_clinicas",
+  "mcp__fransua__direcciones_postales",
+  "mcp__fransua__mensajes_whatsapp",
 ];
 const WRITE_TOOL_NAMES = [
   "mcp__fransua__crear_evento_agenda",
@@ -644,7 +721,7 @@ export async function runAgent(prompt: string, model?: string, actor?: string): 
   const fransuaMcpServer = createSdkMcpServer({
     name: "fransua",
     version: "1.0.0",
-    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, objecionesClinicas, ...writeTools],
+    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, objecionesClinicas, direccionesPostales, mensajesWhatsapp, ...writeTools],
   });
 
   const q = query({

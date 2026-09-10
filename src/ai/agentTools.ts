@@ -55,29 +55,47 @@ function fmtMadrid(d: Date): string {
 
 type LeadRef = { source_row: number | null; jid: string | null; phone: string | null; display_name: string | null };
 
-/** Resuelve la referencia del lead (fila/jid/nombre) por sourceRow o teléfono. */
+/**
+ * Resuelve el lead de una acción de Fransua (evento, recordatorio, aviso).
+ *
+ * ⚠️ IDENTIDAD = TELÉFONO (regla del usuario, 27-07-2026). La fila del Sheet es
+ * posicional y se desplaza al borrar filas por encima (10-09-2026: un evento con
+ * Marta Cuadra acabó enseñando a Nerea Lobe). Por eso:
+ *  1. Si viene el teléfono, manda él.
+ *  2. Si solo viene la fila, se traduce a teléfono con `lead_directory`: la MISMA
+ *     foto del CRM de la que `buscar_leads` sacó esa fila, así que fila y
+ *     teléfono son de la misma persona.
+ *     Antes se buscaba el CHAT por `chat_intel.source_row`, que es el enlace
+ *     chat↔fila y puede ir desfasado tras borrar filas: el evento heredaba el
+ *     teléfono del chat de OTRA persona.
+ *  3. El chat (jid) se localiza por ese teléfono.
+ * Si no hay forma de saber el teléfono, se guarda sin él y el dashboard lo
+ * enseña como vínculo dudoso: nunca se inventa.
+ */
 async function resolveLeadRef(
   sb: ReturnType<typeof getSupabase>,
   opts: { sourceRow?: number | null; telefono?: string | null }
 ): Promise<LeadRef> {
   const cols = "jid,phone,display_name,source_row";
-  const sr = Number.isFinite(Number(opts.sourceRow)) ? Number(opts.sourceRow) : null;
-  const phone = canonPhone(opts.telefono ?? undefined);
-  const norm = (r: any): LeadRef => ({
-    source_row: r.source_row ?? sr,
-    jid: r.jid ?? null,
-    phone: r.phone ?? (phone || null),
-    display_name: r.display_name ?? null,
-  });
-  if (sr != null) {
-    const { data } = await sb.from("chat_intel").select(cols).eq("source_row", sr).order("last_ts", { ascending: false }).limit(1);
-    if (data && data.length) return norm(data[0]);
+  const n = Number(opts.sourceRow);
+  const sr = opts.sourceRow != null && Number.isInteger(n) && n > 0 ? n : null;
+  let phone = canonPhone(opts.telefono ?? undefined);
+  let nombre: string | null = null;
+  if (!phone && sr != null) {
+    try {
+      const d = getDb().prepare("SELECT phone, name FROM lead_directory WHERE source_row = ?").get(sr) as { phone: string | null; name: string | null } | undefined;
+      phone = canonPhone(d?.phone ?? undefined);
+      nombre = d?.name ?? null;
+    } catch {
+      /* sin directorio: se guarda sin teléfono (vínculo dudoso, nunca inventado) */
+    }
   }
   if (phone.length >= 9) {
     const { data } = await sb.from("chat_intel").select(cols).eq("phone", phone).order("last_ts", { ascending: false }).limit(1);
-    if (data && data.length) return norm(data[0]);
+    const r = (data?.[0] ?? null) as { jid?: string | null; display_name?: string | null; source_row?: number | null } | null;
+    return { source_row: sr ?? r?.source_row ?? null, jid: r?.jid ?? null, phone, display_name: r?.display_name ?? nombre };
   }
-  return { source_row: sr, jid: null, phone: phone || null, display_name: null };
+  return { source_row: sr, jid: null, phone: null, display_name: nombre };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -447,8 +465,8 @@ function buildWriteTools(actor: string) {
       cuando: z.string().describe("fecha y hora de INICIO en ISO 8601 con zona horaria, p.ej. '2026-07-25T10:00:00+02:00'. Resuélvela tú a partir del 'HOY' que te doy en el prompt (zona Europe/Madrid)."),
       duracion_min: z.number().optional().describe("duración en minutos (por defecto 30)"),
       tipo: z.enum(["cita", "llamada", "formacion", "otro"]).optional().describe("tipo de evento (por defecto 'cita')"),
-      lead_fila: z.number().optional().describe("nº de fila del lead en el CRM (sourceRow) si el evento es sobre un lead concreto; usa el que te dé buscar_leads"),
-      telefono: z.string().optional().describe("teléfono del lead (alternativa a lead_fila)"),
+      telefono: z.string().optional().describe("teléfono del lead si el evento es sobre un lead concreto — PÁSALO SIEMPRE que lo tengas (buscar_leads y ficha_lead lo dan): es su identidad estable"),
+      lead_fila: z.number().optional().describe("nº de fila del lead en el CRM (sourceRow), SOLO si no tienes su teléfono: la fila se mueve cuando se borran filas del Sheet"),
       descripcion: z.string().optional().describe("notas/detalle del evento"),
     },
     async (args: { titulo: string; cuando: string; duracion_min?: number; tipo?: "cita" | "llamada" | "formacion" | "otro"; lead_fila?: number; telefono?: string; descripcion?: string }) => {
@@ -486,8 +504,8 @@ function buildWriteTools(actor: string) {
     {
       titulo: z.string().describe("qué hay que recordar, p.ej. 'Llamar a Gemma para cerrar la matrícula'"),
       cuando: z.string().describe("fecha (y hora si la hay) en ISO 8601, resuelta a partir del HOY del prompt. Si Fran solo dijo un día sin hora, usa las 09:00."),
-      lead_fila: z.number().optional().describe("nº de fila del lead (sourceRow), si aplica"),
-      telefono: z.string().optional().describe("teléfono del lead (alternativa)"),
+      telefono: z.string().optional().describe("teléfono del lead, si aplica — PÁSALO SIEMPRE que lo tengas: es su identidad estable"),
+      lead_fila: z.number().optional().describe("nº de fila del lead (sourceRow), SOLO si no tienes su teléfono: la fila se mueve al borrar filas del Sheet"),
       detalle: z.string().optional().describe("detalle adicional"),
     },
     async (args: { titulo: string; cuando: string; lead_fila?: number; telefono?: string; detalle?: string }) => {
@@ -536,8 +554,8 @@ function buildWriteTools(actor: string) {
       titulo: z.string().describe("el aviso, p.ej. 'Revisar la propuesta de la Dra. Ruiz'"),
       cuando: z.string().optional().describe("fecha/hora ISO opcional (a partir del HOY del prompt); si no la das, es un aviso para HOY"),
       detalle: z.string().optional().describe("detalle del aviso"),
-      lead_fila: z.number().optional().describe("nº de fila del lead (sourceRow), si aplica"),
-      telefono: z.string().optional().describe("teléfono del lead (alternativa)"),
+      telefono: z.string().optional().describe("teléfono del lead, si aplica — PÁSALO SIEMPRE que lo tengas: es su identidad estable"),
+      lead_fila: z.number().optional().describe("nº de fila del lead (sourceRow), SOLO si no tienes su teléfono: la fila se mueve al borrar filas del Sheet"),
     },
     async (args: { titulo: string; cuando?: string; detalle?: string; lead_fila?: number; telefono?: string }) => {
       const sb = getSupabase();

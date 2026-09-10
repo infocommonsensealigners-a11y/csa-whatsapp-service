@@ -48,6 +48,36 @@ function normPhone(v: unknown): string | null {
   return /^[6789]\d{8}$/.test(p) ? p : d.length >= 8 ? d : null;
 }
 
+/**
+ * FILA DEL SHEET de un evento: null si no viene o no es una fila real.
+ *
+ * ⚠️ Antes era `Number.isFinite(Number(v)) ? Number(v) : null`, y `Number(null)`
+ * es 0: los eventos creados SIN lead se guardaban con «fila 0» (35 de los 49
+ * eventos futuros, medido el 10-09-2026).
+ *
+ * Y la fila NO es identidad: es la posición del lead en el Sheet cuando se
+ * vinculó, y se desplaza al borrar filas por encima (un evento con Marta Cuadra
+ * acabó enseñando a Nerea Lobe). La identidad es `phone`; la fila es solo una
+ * pista. Ver dashboard `lib/domain/leadIdentity.ts`.
+ */
+export function filaDe(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Deja rastro cuando un evento se vincula a un lead SOLO por fila: es el caso
+ * que se desplaza. NO se adivina el teléfono aquí — uno equivocado enseñaría a
+ * otra persona en silencio, que es peor que ninguno (el dashboard marca estos
+ * vínculos como dudosos y deja confirmarlos).
+ */
+function avisarSinIdentidad(origen: string, fila: number | null, phone: string | null, titulo: string): void {
+  if (fila != null && !phone) {
+    console.warn(`[identidad] ${origen}: «${titulo.slice(0, 60)}» vinculado a la fila ${fila} SIN teléfono — quedará como vínculo dudoso`);
+  }
+}
+
 /** Tipo de evento: string libre (la key del catálogo DINÁMICO del dashboard).
  *  Ya no hay lista cerrada — el usuario crea sus propios tipos. Se sanea a un
  *  string corto; si viene vacío, cae a "cita". */
@@ -111,12 +141,13 @@ export function registerCalendarRoutes(app: FastifyInstance): void {
       all_day: !!b.all_day,
       tipo: normTipo(b.tipo),
       origen: b.origen === "fransua" ? "fransua" : "humano",
-      source_row: Number.isFinite(Number(b.source_row)) ? Number(b.source_row) : null,
+      source_row: filaDe(b.source_row),
       jid: b.jid ? String(b.jid) : null,
       phone: normPhone(b.phone ?? b.telefono),
       color: b.color ? String(b.color) : null,
       status: "active",
     };
+    avisarSinIdentidad("POST /calendar/events", record.source_row, record.phone, record.titulo);
     const sb = getSupabase();
     const { data, error } = await sb.from("calendar_events").insert(record).select(COLS).single();
     if (error) return reply.status(502).send({ ok: false, error: error.message });
@@ -154,7 +185,7 @@ export function registerCalendarRoutes(app: FastifyInstance): void {
           all_day: !!b.all_day,
           tipo: normTipo(b.tipo),
           origen: "humano" as const,
-          source_row: Number.isFinite(Number(b.source_row)) ? Number(b.source_row) : null,
+          source_row: filaDe(b.source_row),
           jid: b.jid ? String(b.jid) : null,
           phone: normPhone(b.phone ?? b.telefono),
           color: b.color ? String(b.color) : null,
@@ -212,7 +243,7 @@ export function registerCalendarRoutes(app: FastifyInstance): void {
     if (b.end_at !== undefined) patch.end_at = b.end_at ? new Date(b.end_at).toISOString() : null;
     if (b.all_day != null) patch.all_day = !!b.all_day;
     if (b.tipo != null && String(b.tipo).trim()) patch.tipo = normTipo(b.tipo);
-    if (b.source_row !== undefined) patch.source_row = Number.isFinite(Number(b.source_row)) ? Number(b.source_row) : null;
+    if (b.source_row !== undefined) patch.source_row = filaDe(b.source_row);
     if (b.jid !== undefined) patch.jid = b.jid ? String(b.jid) : null;
     if (b.phone !== undefined || b.telefono !== undefined) patch.phone = normPhone(b.phone ?? b.telefono);
     if (b.color !== undefined) patch.color = b.color ? String(b.color) : null;

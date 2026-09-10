@@ -12,6 +12,7 @@
 import { getSupabase } from "./supabase";
 import { googleConfigured, pushEvent } from "./googleCalendar";
 import { insertConPhoneSelect } from "./phoneColumn";
+import { filaDe } from "./identidadLead";
 
 const COLS =
   "id,source_row,jid,phone,titulo,descripcion,start_at,end_at,all_day,tipo,origen,color,google_event_id,status,created_at,updated_at";
@@ -59,7 +60,7 @@ export async function createAgendaEvent(input: AgendaInput): Promise<AgendaResul
     all_day: !!input.all_day,
     tipo: normTipo(input.tipo),
     origen: input.origen === "humano" ? "humano" : "fransua",
-    source_row: Number.isFinite(Number(input.source_row)) ? Number(input.source_row) : null,
+    source_row: filaDe(input.source_row), // null/0 → sin lead (antes Number(null) guardaba «fila 0»)
     jid: input.jid ? String(input.jid) : null,
     status: "active",
   };

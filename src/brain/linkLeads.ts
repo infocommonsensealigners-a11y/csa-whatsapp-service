@@ -149,16 +149,19 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
 
   // Índice teléfono → leads (un teléfono puede repetirse en varias filas).
   const byPhone = new Map<string, { sourceRow: number; name: string; estado: string | null }[]>();
-  const dirRows: { sourceRow: number; phone: string; name: string; estado: string | null }[] = [];
+  const dirRows: { sourceRow: number; phone: string | null; name: string; estado: string | null }[] = [];
   /** sourceRow → su clave de teléfono (para saber si un lead YA tiene conversación propia). */
   const leadPhoneKey = new Map<number, string>();
   for (const l of leads) {
     const phone = phoneKey(l.telefono);
-    if (!phone) continue;
     const name = (l.nombre ?? "").trim();
     const estado = l.estado?.canonical ?? null;
+    // El directorio es la FOTO de las filas de HOY, tengan o no teléfono (ver
+    // `clearDir` más abajo): si solo entrasen los leads con teléfono, la fila de
+    // uno sin teléfono seguiría enseñando a quien la ocupaba antes.
+    dirRows.push({ sourceRow: l.sourceRow, phone: phone || null, name, estado });
+    if (!phone) continue;
     leadPhoneKey.set(l.sourceRow, phone);
-    dirRows.push({ sourceRow: l.sourceRow, phone, name, estado });
     const arr = byPhone.get(phone) ?? [];
     arr.push({ sourceRow: l.sourceRow, name, estado });
     byPhone.set(phone, arr);
@@ -205,6 +208,16 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
      ON CONFLICT(source_row) DO UPDATE SET
        phone=excluded.phone, name=excluded.name, estado=excluded.estado, synced_at=excluded.synced_at`
   );
+  /**
+   * ⚠️ El directorio se REHACE entero en cada pasada (usuario, 10-09-2026).
+   * Antes solo se hacía upsert por fila y nunca se borraba: al borrar filas del
+   * Sheet todo sube, así que las filas del final (y las de leads sin teléfono)
+   * seguían enseñando a la persona que las ocupaba ANTES — y de ahí salían
+   * nombres y teléfonos equivocados para chats, Fransua y los vínculos manuales.
+   */
+  const clearDir = db.prepare("DELETE FROM lead_directory");
+  /** Por debajo de esto la foto del CRM viene rota: no se vacía el directorio. */
+  const MIN_LEADS_PARA_REHACER = 100;
   const upLink = db.prepare(
     `INSERT INTO chat_lead_links
        (chat_jid, source_row, phone_snapshot, lead_name_snapshot, method, status, created_at, updated_at)
@@ -254,6 +267,8 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
   const wanted = new Set<string>();
 
   const tx = db.transaction(() => {
+    // Dentro de la MISMA transacción: nadie ve nunca el directorio a medias.
+    if (dirRows.length >= MIN_LEADS_PARA_REHACER) clearDir.run();
     for (const d of dirRows) {
       upDir.run({ ...d, now });
       dirCount++;

@@ -28,6 +28,7 @@ import { getPlanContext } from "../../brain/plan";
 import { getBusinessSnapshot } from "../../brain/businessSnapshot";
 import { logActionAudit } from "../../brain/audit";
 import { insertConPhone } from "../../brain/phoneColumn";
+import { filaDe, telefonoDeChat } from "../../brain/identidadLead";
 import { getEstrategiaCSA } from "../../brain/estrategia";
 import { runAgent, agentModel } from "../../ai/agentTools";
 import { runLearning } from "../../brain/learning";
@@ -342,9 +343,12 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const timeline = (data ?? [])
       .filter((r: any) => {
         const p = r.payload || {};
-        if (phone && canonPhone(p.phone) === phone) return true;
-        if (Number.isFinite(sourceRow) && (r.source_row === sourceRow || p.source_row === sourceRow)) return true;
-        return false;
+        // IDENTIDAD = TELÉFONO (10-09-2026): si lo sabemos, SOLO cuenta el
+        // teléfono. Antes valía también la fila (un O), y una fila desplazada
+        // metía en la ficha las notas de OTRA persona. La fila, solo para leads
+        // sin teléfono.
+        if (phone) return canonPhone(p.phone) === phone;
+        return Number.isFinite(sourceRow) && (r.source_row === sourceRow || p.source_row === sourceRow);
       })
       .map((r: any) => {
         const p = r.payload || {};
@@ -820,7 +824,10 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const actor = actorFrom(req, body.author);
     const enDias = Number(body.en_dias) || 0;
     const due = new Date(Date.now() + enDias * 86400_000).toISOString();
-    const sourceRow = Number.isFinite(body.sourceRow) ? Number(body.sourceRow) : null;
+    // La fila es solo una pista; la IDENTIDAD es el teléfono: el que venga o, si
+    // no, el del propio chat (no depende del Sheet, no se desplaza al borrar filas).
+    const sourceRow = filaDe(body.sourceRow);
+    const phone = canonPhone(body.phone) || telefonoDeChat(body.jid) || null;
     const sb = getSupabase();
 
     // 1) Recordatorio (tabla reminders, compat con lo previo). Con TELÉFONO
@@ -829,7 +836,7 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       sb,
       "reminders",
       { source_row: sourceRow, jid: body.jid ?? null, titulo: body.titulo, due_at: due, origen: "fransua" },
-      body.phone
+      phone
     );
     if (error) return reply.status(502).send({ ok: false, error: error.message });
 
@@ -850,7 +857,7 @@ export function registerNoteRoutes(app: FastifyInstance): void {
           jid: body.jid ?? null,
           status: "active",
         },
-        body.phone
+        phone
       );
       agendado = !calErr;
       if (calErr) console.warn("[confirm] no se pudo agendar el evento:", calErr.message);
@@ -866,7 +873,7 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       result: "ok",
       sourceRow,
       jid: body.jid ?? null,
-      phone: body.phone ?? null,
+      phone,
       name: body.name ?? null,
     });
 

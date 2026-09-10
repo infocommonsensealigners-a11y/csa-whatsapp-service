@@ -35,6 +35,8 @@ export interface AgendaProposal {
   duracion_min: number | null;
   lead: string | null;
   source_row: number | null;
+  /** Teléfono del chat del lead: su IDENTIDAD (la fila se desplaza al borrar filas del Sheet). */
+  phone: string | null;
   jid: string | null;
   motivo: string;
   kind: "responder" | "caliente" | "reactivar" | "cadencia" | "tarea";
@@ -196,7 +198,7 @@ const STRATEGY_SINCE = "2025-04-01";
 const daysSince = (ts: number | null) => (ts ? Math.floor(Date.now() / 1000 - ts) / 86400 : Infinity);
 
 interface Cand {
-  jid: string; source_row: number | null; display_name: string | null; producto: string | null;
+  jid: string; source_row: number | null; phone: string | null; display_name: string | null; producto: string | null;
   temperatura: string | null; resumen: string | null; silencio_dias: number;
   kind: AgendaProposal["kind"];
 }
@@ -220,7 +222,7 @@ async function candidateLeads(sb: ReturnType<typeof getSupabase>, max = 16): Pro
     const ultimo = r.intervalos?.ultimo_emisor ?? null;
     const cerrada = r.intervalos?.conversacion_cerrada === true;
     return {
-      jid: r.jid, source_row: r.source_row ?? null, display_name: r.display_name ?? null, producto: r.producto ?? null,
+      jid: r.jid, source_row: r.source_row ?? null, phone: r.phone ?? null, display_name: r.display_name ?? null, producto: r.producto ?? null,
       temperatura: r.temperatura ?? null, resumen: r.resumen ?? null, silencio_dias: silencio,
       esperando: ultimo === "lead" && !cerrada, es_cliente: esCliente(r.etiquetas),
     };
@@ -239,7 +241,7 @@ async function candidateLeads(sb: ReturnType<typeof getSupabase>, max = 16): Pro
   for (const r of [...responder, ...caliente, ...reactivar]) {
     if (seen.has(r.jid)) continue;
     seen.add(r.jid);
-    merged.push({ jid: r.jid, source_row: r.source_row, display_name: r.display_name, producto: r.producto, temperatura: r.temperatura, resumen: r.resumen, silencio_dias: r.silencio_dias, kind: r.kind });
+    merged.push({ jid: r.jid, source_row: r.source_row, phone: r.phone, display_name: r.display_name, producto: r.producto, temperatura: r.temperatura, resumen: r.resumen, silencio_dias: r.silencio_dias, kind: r.kind });
     if (merged.length >= max) break;
   }
   return merged;
@@ -291,14 +293,22 @@ export async function proposeAgendaEvents(limit = 10, opts: { persist?: boolean 
   const in30 = new Date(now.getTime() + 30 * 86400_000).toISOString();
   const { data: yaData } = await sb
     .from("calendar_events")
-    .select("titulo,start_at,source_row")
+    .select("titulo,start_at,source_row,phone")
     .neq("status", "cancelled")
     .gte("start_at", now.toISOString())
     .lte("start_at", in30)
     .limit(500);
   const yaAgendado = (yaData ?? []) as any[];
-  const filasAgendadas = new Set(yaAgendado.filter((e) => e.source_row != null).map((e) => Number(e.source_row)));
-  const candidatosLibres = cands.filter((c) => c.source_row == null || !filasAgendadas.has(Number(c.source_row)));
+  // «¿Ya tiene algo agendado?» por TELÉFONO; la fila solo para quien no lo
+  // tiene (es posicional: tras borrar filas señalaría a otra persona).
+  const clave = (p: unknown) => String(p ?? "").replace(/\D/g, "").slice(-9);
+  const telefonosAgendados = new Set(yaAgendado.map((e) => clave(e.phone)).filter((k) => k.length === 9));
+  const filasAgendadas = new Set(yaAgendado.filter((e) => e.source_row != null && e.source_row > 0 && !e.phone).map((e) => Number(e.source_row)));
+  const candidatosLibres = cands.filter((c) => {
+    const k = clave(c.phone);
+    if (k.length === 9) return !telefonosAgendados.has(k);
+    return c.source_row == null || !filasAgendadas.has(Number(c.source_row));
+  });
   if (!candidatosLibres.length) {
     if (opts.persist) await storeProposals([]);
     return { proposals: [], playbookAt, learned: !!playbook, candidatos: cands.length };
@@ -374,6 +384,7 @@ export async function proposeAgendaEvents(limit = 10, opts: { persist?: boolean 
       duracion_min: allDay || !Number.isFinite(durRaw) ? null : Math.min(Math.max(durRaw, 15), 480),
       lead: cand?.display_name ?? null,
       source_row: cand?.source_row ?? null, // fila REAL del candidato (nunca la del LLM)
+      phone: cand?.phone ?? null, // su identidad: con esto el evento no depende de la fila
       jid: cand?.jid ?? null,
       motivo: String(p?.motivo ?? "").trim().slice(0, 300),
       kind: (["responder", "caliente", "reactivar", "cadencia", "tarea"].includes(p?.kind) ? p.kind : cand?.kind ?? "cadencia") as AgendaProposal["kind"],

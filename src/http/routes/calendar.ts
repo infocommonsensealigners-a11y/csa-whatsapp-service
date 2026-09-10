@@ -12,6 +12,7 @@
 import type { FastifyInstance } from "fastify";
 import { brainConfigured, getSupabase } from "../../brain/supabase";
 import { getMeta } from "../../db/db";
+import { filaDe } from "../../brain/identidadLead";
 import {
   googleConfigured,
   ensureFransuaCalendar,
@@ -58,13 +59,9 @@ function normPhone(v: unknown): string | null {
  * Y la fila NO es identidad: es la posición del lead en el Sheet cuando se
  * vinculó, y se desplaza al borrar filas por encima (un evento con Marta Cuadra
  * acabó enseñando a Nerea Lobe). La identidad es `phone`; la fila es solo una
- * pista. Ver dashboard `lib/domain/leadIdentity.ts`.
+ * pista. Vive en `brain/identidadLead.ts` (la usan también Fransua y las notas).
  */
-export function filaDe(v: unknown): number | null {
-  if (v == null || v === "") return null;
-  const n = Number(v);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
+export { filaDe };
 
 /**
  * Deja rastro cuando un evento se vincula a un lead SOLO por fila: es el caso

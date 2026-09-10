@@ -6,7 +6,7 @@
  * `Number(null)` es 0: con la conversión vieja, los eventos creados SIN lead se
  * guardaban con «fila 0» (35 de los 49 eventos futuros en producción).
  */
-import { filaDe } from "../src/http/routes/calendar";
+import { filaDe } from "../src/brain/identidadLead";
 
 let fallos = 0;
 const ok = (cond: boolean, msg: string) => {

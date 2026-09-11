@@ -8,15 +8,18 @@
  * verifica que los tokens de la API de publicación de Baileys no aparezcan
  * en ningún fichero de `src/`.
  *
- * Ciclo de vida de la conexión:
+ * Ciclo de vida de la conexión (la decisión vive en ./reconexion.ts):
  *  - QR nuevo → estado "needs_qr" + dataURL disponible para la UI.
- *  - Cierre recuperable (timeout, restartRequired tras escanear, red) →
- *    reconexión con backoff exponencial 1 s → 60 s.
+ *  - restartRequired (515, justo después de escanear) → socket nuevo AL
+ *    MOMENTO, tras terminar de guardar las credenciales. Con espera, el móvil
+ *    da la vinculación por fallida (incidente 11-09-2026).
+ *  - QR caducado sin escanear (408 en "needs_qr") → QR nuevo a los 3 s.
+ *  - Otro cierre recuperable (red, 428, 500…) → backoff exponencial 1 s → 60 s.
  *  - loggedOut (desvinculado desde el móvil) → se limpia data/auth y se
  *    arranca de cero, lo que produce un QR fresco.
+ *  - Al cerrarse, el QR se retira: la UI nunca enseña uno caducado.
  */
 import makeWASocket, {
-  DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
@@ -33,6 +36,7 @@ import { config } from "../config";
 import { isGroupJid, isNewsletterJid } from "./jidPhone";
 import type { WaConnectionState } from "../shared/whatsapp-contracts";
 import type { GroupMetadata } from "baileys";
+import { TOPE_BACKOFF_MS, decidirCierre } from "./reconexion";
 
 const log = pino({ level: "info", base: undefined });
 // Baileys es muy verboso; solo nos interesan sus warnings/errores.
@@ -49,6 +53,10 @@ let reconnectDelayMs = 1_000;
 let reconnectTimer: NodeJS.Timeout | null = null;
 let starting = false;
 let shuttingDown = false;
+/** Cola de guardados de credenciales (ver creds.update en startWhatsapp). */
+let guardadoCreds: Promise<void> = Promise.resolve();
+/** Última reconexión inmediata por 515 (ver ./reconexion.ts). */
+let ultimoReinicioYaMs = 0;
 
 type EventRegistration = {
   event: keyof BaileysEventMap;
@@ -247,7 +255,13 @@ export async function startWhatsapp(): Promise<void> {
     });
     sock = s;
 
-    s.ev.on("creds.update", saveCreds);
+    // Guardados en fila: el reinicio del 515 espera a que el último termine,
+    // para abrir el socket nuevo con las credenciales recién emparejadas.
+    s.ev.on("creds.update", () => {
+      guardadoCreds = guardadoCreds
+        .then(() => saveCreds())
+        .catch((err) => log.error({ err: (err as Error).message }, "wa: no se pudieron guardar las credenciales"));
+    });
     s.ev.on("connection.update", (update) => {
       void handleConnectionUpdate(update);
     });
@@ -266,14 +280,21 @@ export async function startWhatsapp(): Promise<void> {
   }
 }
 
-/** Programa una reconexión con backoff exponencial (1 s → 60 s). Reutilizable. */
-function scheduleReconnect(): void {
+/**
+ * Programa una reconexión. Por defecto, backoff exponencial (1 s → 60 s);
+ * handleConnectionUpdate pasa lo que decida ./reconexion.ts.
+ */
+function scheduleReconnect(
+  ms: number = reconnectDelayMs,
+  siguienteMs: number = Math.min(reconnectDelayMs * 2, TOPE_BACKOFF_MS)
+): void {
   if (shuttingDown) return;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
     void startWhatsapp();
-  }, reconnectDelayMs);
-  reconnectDelayMs = Math.min(reconnectDelayMs * 2, 60_000);
+  }, ms);
+  reconnectDelayMs = siguienteMs;
 }
 
 /**
@@ -347,16 +368,39 @@ async function handleConnectionUpdate(
 
     if (shuttingDown) return;
 
-    if (statusCode === DisconnectReason.loggedOut) {
+    const estadoPrevio = state;
+    // Un QR de un socket cerrado ya no sirve: que la UI no lo enseñe.
+    qrDataUrl = null;
+
+    const decision = decidirCierre({
+      statusCode,
+      estadoPrevio,
+      retrasoMs: reconnectDelayMs,
+      ahoraMs: Date.now(),
+      ultimoReinicioYaMs,
+    });
+
+    if (decision.accion === "reset") {
       // Desvinculado desde el móvil: las credenciales ya no valen.
       log.warn("wa: sesión desvinculada remotamente — limpiando auth y pidiendo QR nuevo");
       await resetSession();
       return;
     }
 
+    if (decision.accion === "ya") {
+      log.info({ statusCode, estadoPrevio }, "wa: WhatsApp pide reiniciar la conexión — reconecto al momento");
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      teardownSocket();
+      ultimoReinicioYaMs = Date.now();
+      await guardadoCreds;
+      void startWhatsapp();
+      return;
+    }
+
     setState("close");
-    log.warn({ statusCode, retryInMs: reconnectDelayMs }, "wa: conexión cerrada, reintentando");
+    log.warn({ statusCode, estadoPrevio, retryInMs: decision.ms }, "wa: conexión cerrada, reintentando");
     teardownSocket();
-    scheduleReconnect();
+    scheduleReconnect(decision.ms, decision.siguienteMs);
   }
 }

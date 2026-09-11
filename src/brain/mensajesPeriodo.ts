@@ -94,11 +94,18 @@ export function fmtInstante(tsSec: number): string {
 
 /* ------------------------------- detectores -------------------------------- */
 
-/** Código postal español (01000–52999), como palabra suelta: no casa dentro de un teléfono. */
-const RE_CP = /\b(?:0[1-9]|[1-4]\d|5[0-2])\d{3}\b/;
-/** Una vía: calle, avenida, plaza… seguida de algo. */
+/**
+ * Código postal español (01000–52999), sin cifras pegadas a los lados: no casa
+ * dentro de un teléfono, pero sí pegado a letras («CP28047»), que `\b` no veía.
+ */
+const RE_CP = /(?:^|\D)(?:0[1-9]|[1-4]\d|5[0-2])\d{3}(?:\D|$)/;
+/**
+ * Una vía o un trozo de dirección: calle, avenida, plaza, camí… y también piso,
+ * portal, bajo o «nº 5». Ampliado el 11-09-2026: con la versión anterior se
+ * escapaban direcciones reales («cami del grao 33 2c», «Alfonso gomez 55, piso 2»).
+ */
 const RE_VIA =
-  /(?:^|[\s,(])(?:c\/|c\.|calle|avda\.?|avenida|av\.|plaza|pza\.?|paseo|p[º°]|camino|carretera|ctra\.?|urbanizaci[oó]n|urb\.|ronda|traves[ií]a|glorieta|pol[ií]gono|rambla|carrer|r[uú]a)\s*\S/i;
+  /(?:^|[\s,(.])(?:c\/|c\.|calle|cl\.?|avda\.?|avenida|av\.|plaza|pza\.?|pl\.|paseo|p[º°]\.?|camino|cam[ií]|carretera|ctra\.?|urbanizaci[oó]n|urb\.?|ronda|traves[ií]a|glorieta|pol[ií]gono|rambla|carrer|r[uú]a|piso|portal|escalera|esc\.|bloque|puerta|bajo|n[º°]\.?\s*\d|n[uú]mero)(?:\s|\d|$)/i;
 const RE_EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/;
 
 export type DatoBuscado = "direccion" | "email" | "codigo_postal";
@@ -242,6 +249,93 @@ export function mensajesDelPeriodo(db: DbLectura, o: OpcionesMensajes): string {
       ? `\n(Se muestran los ${max} primeros de ${casan.length}: afina con «contiene», «dato» o «lead», o acorta el rango.)`
       : "";
   return `${cabecera}\n${bloques.join("\n")}${pie}`;
+}
+
+/* ------------------------- direcciones en los chats ------------------------- */
+
+/** Mensaje nuestro que pide la dirección para el envío. */
+const RE_PIDE = /direcci[oó]n|d[oó]nde te (lo )?(mandamos|enviamos)|enviarte el libro|mandarte el libro|c[oó]digo postal/i;
+/** Respuestas de cortesía que no aportan nada («Gracias», «Vale», un emoji). */
+const RE_CORTESIA =
+  /^(ok|okk*|vale+|genial|perfecto|s[uú]per|gracias|muchas gracias|much[ií]simas gracias|mil gracias|de nada|igualmente|s[ií]+|claro)?[\s!¡.,…😊🙏👍🫶❤️☺️😁👌🏻🤗]*$/i;
+
+export interface DireccionEnChat {
+  jid: string;
+  nombre: string;
+  telefono: string | null;
+  /** Epoch SEGUNDOS del primer mensaje con la dirección. */
+  ts: number;
+  /** Lo que escribió, literal (varios mensajes unidos con « · »). */
+  texto: string;
+}
+
+/**
+ * DIRECCIONES que aparecen en los chats de un periodo, las haya registrado
+ * alguien o no (usuario, 11-09-2026: Fransua dijo 8 direcciones y en los chats
+ * había 50 — la mayoría las pidió Fran a mano y no se apuntaron en ninguna
+ * parte). Se marcan dos cosas:
+ *  · lo que el doctor escribe con pinta de dirección (`pareceDireccion`);
+ *  · lo que contesta DESPUÉS de que le pidamos la dirección (hasta 4 mensajes,
+ *    sin cortesías): así sale «Leonardo Hernández de Tolosa 11» · «06011» ·
+ *    «Badajoz», que por separado no parecen nada.
+ * Un chat solo cuenta si algo de eso trae una vía o un número. `excluir` =
+ * teléfonos ya registrados (se listan aparte).
+ */
+export function direccionesEnChats(
+  db: DbLectura,
+  desde: Date,
+  hasta: Date,
+  excluir: ReadonlySet<string> = new Set(),
+): DireccionEnChat[] {
+  const filas = db
+    .prepare(
+      "SELECT m.chat_jid AS jid, m.from_me AS me, m.ts, m.text, c.display_name AS nombre, c.phone AS tel FROM messages m JOIN chats c ON c.jid = m.chat_jid " +
+        "WHERE m.ts >= ? AND m.ts < ? AND m.text IS NOT NULL AND trim(m.text) <> '' " +
+        "AND m.chat_jid NOT LIKE '%@g.us' AND m.chat_jid NOT LIKE '%@broadcast' AND m.chat_jid NOT LIKE '%@newsletter' " +
+        "ORDER BY m.chat_jid, m.ts",
+    )
+    .all(Math.floor(desde.getTime() / 1000), Math.floor(hasta.getTime() / 1000)) as {
+    jid: string; me: number; ts: number; text: string; nombre: string | null; tel: string | null;
+  }[];
+
+  const porChat = new Map<string, typeof filas>();
+  for (const f of filas) {
+    const l = porChat.get(f.jid) ?? [];
+    l.push(f);
+    porChat.set(f.jid, l);
+  }
+
+  const out: DireccionEnChat[] = [];
+  for (const [jid, msgs] of porChat) {
+    const tel = msgs[0].tel;
+    if (tel && excluir.has(tel)) continue;
+    const marcados = new Set<number>();
+    msgs.forEach((m, i) => {
+      if (m.me) {
+        if (!RE_PIDE.test(m.text)) return;
+        let k = 0;
+        for (let x = i + 1; x < msgs.length && k < 4; x++) {
+          if (msgs[x].me) continue;
+          k++;
+          const t = msgs[x].text.trim();
+          if (!RE_CORTESIA.test(t) && (/\d/.test(t) || t.length <= 60)) marcados.add(x);
+        }
+        return;
+      }
+      if (pareceDireccion(m.text)) marcados.add(i);
+    });
+    const idx = [...marcados].sort((a, b) => a - b);
+    const conSustancia = idx.filter((i) => pareceDireccion(msgs[i].text) || /\d{2,}/.test(msgs[i].text));
+    if (conSustancia.length === 0) continue;
+    out.push({
+      jid,
+      nombre: msgs[0].nombre?.trim() || tel || jid.split("@")[0],
+      telefono: tel,
+      ts: msgs[conSustancia[0]].ts,
+      texto: idx.map((i) => msgs[i].text.replace(/\s+/g, " ").trim().slice(0, 200)).join(" · "),
+    });
+  }
+  return out.sort((a, b) => a.ts - b.ts);
 }
 
 /** Epoch SEGUNDOS del último mensaje del histórico (para avisar si WhatsApp lleva rato sin entrar). */

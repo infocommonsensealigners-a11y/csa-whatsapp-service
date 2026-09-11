@@ -31,7 +31,15 @@ import { storeLeccion } from "../brain/lecciones";
 import { getDb } from "../db/db";
 import { getWaState } from "../wa/socket";
 import { getDireccionesRecogidas } from "../brain/direcciones";
-import { avisoConexion, mensajesDelPeriodo, rangoMadrid, ultimoMensajeTs } from "../brain/mensajesPeriodo";
+import {
+  avisoConexion,
+  direccionesEnChats,
+  fmtInstante,
+  mensajesDelPeriodo,
+  rangoMadrid,
+  ultimoMensajeTs,
+  type DireccionEnChat,
+} from "../brain/mensajesPeriodo";
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -469,19 +477,47 @@ function avisoWhatsapp(): string | null {
 
 const direccionesPostales = tool(
   "direcciones_postales",
-  "Las DIRECCIONES POSTALES recogidas en un periodo: las que los doctores dieron por WhatsApp en las campañas (captadas por la conversación, llegadas tras el cierre o encontradas al repasar el chat) y las apuntadas a mano en la ficha del lead. Trae nombre, teléfono, la dirección tal cual, el código postal (avisa si falta: sin CP el envío no llega), de dónde salió y cuándo. Úsala SIEMPRE para «¿qué direcciones hemos recogido desde ayer / esta semana?» o para preparar envíos (libros, kits).",
+  "TODAS las DIRECCIONES POSTALES de un periodo, en dos listas: (1) las REGISTRADAS en el dashboard (campañas de WhatsApp y fichas de los leads) y (2) las que aparecen en los CHATS de esas fechas y NO están registradas (lo que el doctor escribió con pinta de dirección o lo que contestó cuando se le pidió). Trae nombre, teléfono, la dirección y el código postal (avisa si falta: sin CP el envío no llega). Úsala SIEMPRE para «¿qué direcciones hemos recogido desde ayer / esta semana?» o para preparar envíos (libros, kits), y da el TOTAL de las dos listas.",
   { desde: FECHA_DESDE, hasta: FECHA_HASTA },
   async (args: { desde: string; hasta?: string }) => {
     const r = rangoMadrid(args.desde, args.hasta);
     if ("error" in r) return txt(r.error);
     const d = await getDireccionesRecogidas(r.desde, r.hasta);
-    if (!d) return txt("No he podido leer las direcciones del dashboard ahora mismo. No me lo invento: vuelve a preguntarme en un momento.");
+    /**
+     * (2) LO QUE HAY EN LOS CHATS Y NO ESTÁ REGISTRADO. Fallo medido el
+     * 11-09-2026: solo con lo registrado, Fransua dijo 8 direcciones desde el
+     * lunes y en los chats había 18 (50 desde el viernes): Fran las pedía a mano
+     * y nadie las apuntaba. Leer los chats es la única forma de no quedarse corto.
+     */
+    let enChats: DireccionEnChat[] = [];
+    try {
+      enChats = direccionesEnChats(getDb(), r.desde, r.hasta, new Set(d?.telefonos ?? []));
+    } catch {
+      /* sin BD de mensajes: queda solo lo registrado */
+    }
     const aviso = avisoWhatsapp();
-    return txt(
-      `${aviso ? `${aviso}\n\n` : ""}${d.texto}\n\n` +
-        "Esto es lo que el dashboard tiene REGISTRADO. Una dirección dada en un chat FUERA de una campaña no está aquí: " +
-        "si hace falta, búscala con mensajes_whatsapp(dato:\"direccion\") en las mismas fechas."
+    const partes: string[] = [];
+    if (aviso) partes.push(aviso);
+    partes.push(
+      d
+        ? `(1) REGISTRADAS EN EL DASHBOARD:\n${d.texto}`
+        : "(1) No he podido leer las direcciones REGISTRADAS del dashboard ahora mismo (lo de abajo sí sale de los chats)."
     );
+    partes.push(
+      enChats.length
+        ? `(2) EN LOS CHATS Y SIN REGISTRAR: ${enChats.length} persona(s). Texto literal: revísalo (puede faltar el CP o haber un mensaje de más):\n` +
+            enChats
+              .slice(0, 80)
+              .map((e) => `- ${fmtInstante(e.ts)} · ${e.nombre}${e.telefono ? ` (tel ${e.telefono})` : ""}: «${e.texto}»`)
+              .join("\n") +
+            (enChats.length > 80 ? `\n(y ${enChats.length - 80} más: acorta el rango)` : "")
+        : "(2) En los chats de esas fechas no hay ninguna otra dirección sin registrar."
+    );
+    partes.push(
+      `Responde con el TOTAL: ${d?.n ?? "?"} registradas + ${enChats.length} encontradas en los chats. ` +
+        "Si Fran quiere guardar las de la lista (2) en las fichas, dile que se puede hacer desde la ficha de cada lead."
+    );
+    return txt(partes.join("\n\n"));
   }
 );
 

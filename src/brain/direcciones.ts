@@ -10,7 +10,10 @@
 
 import { config } from "../config";
 
-export async function getDireccionesRecogidas(desde: Date, hasta: Date): Promise<{ texto: string; n: number } | null> {
+export async function getDireccionesRecogidas(
+  desde: Date,
+  hasta: Date,
+): Promise<{ texto: string; n: number; telefonos: string[] } | null> {
   const token = process.env.FRANSUA_INTERNAL_TOKEN;
   if (!token) return null;
   try {
@@ -19,9 +22,12 @@ export async function getDireccionesRecogidas(desde: Date, hasta: Date): Promise
       `?desde=${encodeURIComponent(desde.toISOString())}&hasta=${encodeURIComponent(hasta.toISOString())}`;
     const res = await fetch(url, { headers: { "x-fransua-token": token }, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return null;
-    const j = (await res.json()) as { ok?: boolean; texto?: string; items?: unknown[] };
+    const j = (await res.json()) as { ok?: boolean; texto?: string; items?: { telefono?: unknown }[] };
     if (!j?.ok || typeof j.texto !== "string") return null;
-    return { texto: j.texto, n: Array.isArray(j.items) ? j.items.length : 0 };
+    const items = Array.isArray(j.items) ? j.items : [];
+    // Los teléfonos registrados, para no repetirlos en lo que se encuentra en los chats.
+    const telefonos = items.map((i) => String(i?.telefono ?? "")).filter(Boolean);
+    return { texto: j.texto, n: items.length, telefonos };
   } catch {
     return null;
   }

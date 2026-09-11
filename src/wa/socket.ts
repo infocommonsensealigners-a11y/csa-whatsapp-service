@@ -39,15 +39,33 @@ import type { GroupMetadata } from "baileys";
 import { TOPE_BACKOFF_MS, decidirCierre } from "./reconexion";
 
 const log = pino({ level: "info", base: undefined });
-// Baileys es muy verboso; solo nos interesan sus warnings/errores.
-const baileysLog = pino({ level: "warn", base: undefined });
+/**
+ * Baileys es muy verboso. Se enseñan sus warnings/errores y, de nivel info,
+ * SOLO lo que cuenta del historial y de la sincronización inicial: el 11-09-2026
+ * el volcado del móvil no llegó a la base y no había forma de saber en qué paso
+ * se había quedado, porque Baileys lo narra a nivel info.
+ */
+const INFO_INTERESANTE = /histor|sync|Syncing|Online|Awaiting|buffer|offline|dropping|logging in|opened connection/i;
+const baileysLog = pino({
+  level: "info",
+  base: undefined,
+  hooks: {
+    logMethod(args, method, level) {
+      if (level < 40) {
+        const msg = typeof args[0] === "string" ? args[0] : typeof args[1] === "string" ? args[1] : "";
+        if (!INFO_INTERESANTE.test(msg)) return;
+      }
+      method.apply(this, args as Parameters<typeof method>);
+    },
+  },
+});
 
 /* ----------------------- estado privado del módulo ----------------------- */
 
 let sock: WASocket | null = null;
 let state: WaConnectionState = "connecting";
 let qrDataUrl: string | null = null;
-let me: { jid: string; name: string } | null = null;
+let me: { jid: string; name: string; lid: string | null } | null = null;
 
 let reconnectDelayMs = 1_000;
 let reconnectTimer: NodeJS.Timeout | null = null;
@@ -85,7 +103,8 @@ export function getQrDataUrl(): string | null {
   return qrDataUrl;
 }
 
-export function getMe(): { jid: string; name: string } | null {
+/** Nuestra cuenta: jid con teléfono, nombre y, si WhatsApp lo dio al abrir, nuestro @lid. */
+export function getMe(): { jid: string; name: string; lid: string | null } | null {
   return me;
 }
 
@@ -356,7 +375,7 @@ async function handleConnectionUpdate(
     qrDataUrl = null;
     reconnectDelayMs = 1_000;
     const user = sock?.user;
-    me = user ? { jid: user.id, name: user.name ?? "" } : null;
+    me = user ? { jid: user.id, name: user.name ?? "", lid: user.lid ?? null } : null;
     setState("open");
     log.info({ me }, "wa: sesión abierta");
   }

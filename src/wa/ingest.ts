@@ -16,7 +16,7 @@
  * mensaje se guarda bajo el jid canónico de la persona (ver canonico.ts).
  */
 import type { Chat, Contact, WAMessage } from "baileys";
-import { getDb, setMeta } from "../db/db";
+import { getDb } from "../db/db";
 import { emitSse } from "../http/sse";
 import { avisarEntrante } from "../campanas/entrantes";
 import { encolarSalientePorSiEsManual } from "../campanas/manual";
@@ -31,13 +31,13 @@ import {
   aplicarReacciones,
   applyContactNames,
   borrarChats,
-  ingestChatShells,
   ingestMessages,
   type IngestResult,
 } from "./ingestCore";
 import { onWaEvent, downloadMedia, metadatosDeGrupo } from "./socket";
 import { analyzeChat } from "../brain/analyzeChat";
 import { saveMediaBuffer } from "./mediaStore";
+import { procesarVolcado, verMensajeDeProtocolo, vigilarHistorial } from "./historial";
 
 /**
  * Descarga el binario de cada candidato y actualiza `media_path`/`media_mime`.
@@ -141,27 +141,21 @@ function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: s
 
 /** Registra los listeners de ingesta en la fachada (sobreviven reconexiones). */
 export function registerIngest(): void {
+  // Vigilancia del historial del móvil (avisos, descarga propia, huecos): ver historial.ts.
+  vigilarHistorial();
+
+  /**
+   * Volcado de historial entregado por Baileys. Va por el MISMO camino que la
+   * descarga propia de historial.ts (`procesarVolcado`): contactos y chats
+   * primero (identidad teléfono↔LID), luego mensajes en modo `history`.
+   */
   onWaEvent("messaging-history.set", (payload) => {
     try {
-      const { chats, contacts, messages, isLatest, progress, syncType } = payload as typeof payload & {
-        isLatest?: boolean;
-        progress?: number | null;
-        syncType?: number;
-      };
-      // Primero los contactos (nombres y pares teléfono↔LID de la agenda) y los
-      // chats (pnJid/lidJid): así los mensajes ya nacen bajo el jid canónico.
-      applyContactNames(contacts ?? [], false);
-      const shells = ingestChatShells((chats as Chat[]) ?? []);
-      const result = ingestMessages(messages ?? [], { modo: "history" });
-      const now = Math.floor(Date.now() / 1000);
-      setMeta("last_history_sync", String(now));
-      console.log(
-        `[ingest] history.set syncType=${syncType ?? "?"} isLatest=${isLatest ?? "?"} ` +
-          `progress=${progress ?? "?"} chats=${(chats ?? []).length} contacts=${(contacts ?? []).length} ` +
-          `messages=${(messages ?? []).length} → chatsGuardados=${shells} conMsg=${result.touched.size}`
+      const p = payload as typeof payload & { isLatest?: boolean; progress?: number | null; syncType?: number };
+      procesarVolcado(
+        { chats: (p.chats as Chat[]) ?? [], contacts: p.contacts ?? [], messages: p.messages ?? [], syncType: p.syncType, progress: p.progress, isLatest: p.isLatest },
+        "baileys"
       );
-      // Cualquier volcado (chats o mensajes) refresca la lista entera.
-      emitSse({ type: "chats.synced" });
     } catch (err) {
       console.error("[ingest] error procesando history.set:", (err as Error).message);
     }
@@ -171,12 +165,19 @@ export function registerIngest(): void {
     if (type !== "notify" && type !== "append") return;
     try {
       /**
+       * Los mensajes de PROTOCOLO de nuestro propio móvil (avisos de historial,
+       * claves de sincronización…) no son conversación: se registran en
+       * historial.ts y no cuentan como «recibidos sin guardar».
+       */
+      const protocolo = messages.filter((m) => verMensajeDeProtocolo(m)).length;
+      /**
        * `append` NO es solo historial: WhatsApp re-entrega así lo que llegó
        * mientras el sidecar estaba caído (cada deploy son 30-90 s) y el eco de
        * nuestros propios envíos. El núcleo decide por antigüedad qué tratar como
        * en vivo (media, campañas, análisis) — ver VENTANA_VIVO_S.
        */
       const result = ingestMessages(messages, { modo: type });
+      if (protocolo === messages.length) return; // solo protocolo: nada más que hacer
       /**
        * Bajas y respuestas de campaña: fuera de la transacción y sin esperar.
        * Se deduplica por (teléfono, id): el mismo mensaje puede llegar por dos
@@ -192,7 +193,7 @@ export function registerIngest(): void {
        */
       for (const s of result.salientes) encolarSalientePorSiEsManual(s);
       console.log(
-        `[ingest] upsert type=${type} recibidos=${messages.length} guardados=${result.touched.size}` +
+        `[ingest] upsert type=${type} recibidos=${messages.length - protocolo} guardados=${result.touched.size}` +
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")
       );
       for (const jid of result.touched) {

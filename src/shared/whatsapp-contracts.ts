@@ -21,6 +21,12 @@ export interface WaStatus {
   lastHistorySyncAt: number | null;
   /** Estado de la cola IA (Fase 2). */
   aiQueue: { pending: number; paused: boolean };
+  /**
+   * Historial que manda el móvil (11-09-2026): último volcado guardado, último
+   * aviso visto, avisos pendientes de volcado, y cuántos volcados hubo que
+   * descargar aquí porque Baileys no los entregó.
+   */
+  historySync?: { lastAt: number | null; notifiedAt: number | null; pending: number; processedHere: number; total: number };
 }
 
 export interface ChatLeadLink {

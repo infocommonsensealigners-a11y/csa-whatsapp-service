@@ -19,6 +19,7 @@ cuenta. Si dice «Desvinculado · escanea el QR», primero escanear.
 | 8 | En el **móvil**, **archivar** el chat. | Desaparece de la lista y aparece la carpeta «Archivados (1)»; dentro está. Desarchivar → vuelve. |
 | 9 | En el **móvil**, **silenciar** el chat. | 🔕 junto a la hora y el globo se vuelve gris. |
 | 10 | **Cortar la red del sidecar 2 minutos** (o hacer un deploy) y, mientras, mandar 2 mensajes desde el móvil y recibir 1 del contacto con una foto. | Al volver: los 3 mensajes aparecen UNA vez cada uno, en su orden real, la foto se ve (no «📷 Foto» gris), y el chat está en el sitio que le corresponde. La píldora pasó por «Sin conexión» y volvió a verde. |
+| 10b | **Volver a vincular** tras días desvinculado (Dispositivos vinculados → cerrar sesión del dashboard → escanear de nuevo). Dejar WhatsApp abierto en el móvil 3-5 minutos. | En ≤ 10 s la píldora pasa a verde. En los logs: `[historial] emparejado de nuevo…`, uno o varios `[historial] aviso del móvil: tipo=INITIAL_BOOTSTRAP/RECENT…` y sus `[historial] volcado (baileys|propio)…`. En la lista, los chats con mensajes de los días perdidos suben con su fecha real, una sola fila por persona. Si a los 3 min no hay aviso, el log lo dice: abrir WhatsApp en el móvil. |
 | 11 | Desde el móvil, escribir a un **grupo**. | El grupo aparece en la lista con 👥 y su asunto; dentro, cada mensaje ajeno lleva el nombre de quien habla en color. |
 | 12 | Que alguien **entre** o **salga** del grupo, o cambie el asunto. | Línea centrada «X se unió» / «X salió» / «X cambió el asunto a …». |
 | 13 | **Reaccionar** 👍 desde el móvil a un mensaje del flotante, y desde el flotante ❤️ a uno del móvil. | La reacción aparece bajo la burbuja en los dos sitios. Tocar la propia en el flotante la quita también en el móvil. |
@@ -31,4 +32,4 @@ cuenta. Si dice «Desvinculado · escanea el QR», primero escanear.
 | 20 | Abrir un chat en el **flotante** y mirar el móvil. | ⚠️ El móvil NO lo da por leído ni el contacto ve ticks azules (decisión pendiente del usuario: acuse de lectura). |
 
 Si algún paso falla: `railway logs --service csa-whatsapp-service --environment production` filtrando
-por `[ingest]`, `[identidad]`, `[fusion]` y la hora del paso.
+por `[ingest]`, `[identidad]`, `[fusion]`, `[historial]` y la hora del paso.

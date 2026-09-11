@@ -10,6 +10,7 @@ import path from "node:path";
 import { config } from "../../config";
 import { getDb } from "../../db/db";
 import { fetchProfilePicture, getWaState } from "../../wa/socket";
+import { jidDeRuta } from "./chats";
 
 const FRESH_S = 7 * 24 * 3600;
 const NEGATIVE_TTL_MS = 6 * 3600 * 1000;
@@ -91,7 +92,7 @@ async function ensureAvatar(jid: string): Promise<string | null> {
 
 export function registerAvatarRoutes(app: FastifyInstance): void {
   app.get("/avatars/:jid", async (request, reply) => {
-    const { jid } = request.params as { jid: string };
+    const jid = jidDeRuta((request.params as { jid: string }).jid);
     const file = await ensureAvatar(jid);
     if (!file) return reply.status(404).send();
     reply.header("cache-control", "private, max-age=3600");

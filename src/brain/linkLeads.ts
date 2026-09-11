@@ -235,7 +235,9 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
     `UPDATE chat_lead_links SET status='removed', updated_at=@now WHERE chat_jid=@jid AND source_row=@sourceRow`
   );
 
-  const chats = db.prepare("SELECT jid, phone, display_name FROM chats").all() as {
+  // Las filas alias (chats @lid ya fundidos en el del teléfono) no son
+  // conversaciones: vincularlas colgaría el lead de una fila vacía.
+  const chats = db.prepare("SELECT jid, phone, display_name FROM chats WHERE alias_of IS NULL").all() as {
     jid: string;
     phone: string | null;
     display_name: string | null;

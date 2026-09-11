@@ -188,12 +188,12 @@ const conversacionLead = tool(
     const phone = canonPhone(raw);
     let chats: Array<{ jid: string; display_name: string | null; phone: string | null }> = [];
     if (phone.length >= 9) {
-      chats = db.prepare("SELECT jid, display_name, phone FROM chats WHERE phone = ?").all(phone) as typeof chats;
+      chats = db.prepare("SELECT jid, display_name, phone FROM chats WHERE phone = ? AND alias_of IS NULL").all(phone) as typeof chats;
     }
     if (chats.length === 0) {
       // Búsqueda por nombre (case-insensitive, contiene).
       chats = db
-        .prepare("SELECT jid, display_name, phone FROM chats WHERE display_name IS NOT NULL AND lower(display_name) LIKE ? ORDER BY last_message_at DESC LIMIT 12")
+        .prepare("SELECT jid, display_name, phone FROM chats WHERE alias_of IS NULL AND display_name IS NOT NULL AND lower(display_name) LIKE ? ORDER BY last_message_at DESC LIMIT 12")
         .all(`%${raw.toLowerCase()}%`) as typeof chats;
     }
     if (chats.length === 0) return txt(`No encuentro ninguna conversación de WhatsApp con «${raw}». Puede que no esté en el histórico o que el nombre/teléfono no coincida.`);

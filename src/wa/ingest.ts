@@ -1,304 +1,38 @@
 /**
- * Ingesta de conversaciones → SQLite. Escucha dos fuentes:
- *  - "messaging-history.set": volcado que el móvil comparte al emparejar
- *    (historial reciente; best-effort, puede llegar en varios lotes).
- *  - "messages.upsert": mensajes en vivo.
+ * Ingesta de conversaciones → SQLite: el CABLEADO a los eventos de Baileys.
+ * La lógica que escribe filas vive en `ingestCore.ts` (probable sin socket);
+ * aquí solo se conectan los eventos y se hacen las cosas que necesitan red o
+ * servicios: descargar media, avisar a las campañas, re-analizar con Fransua y
+ * emitir los eventos SSE hacia el dashboard.
  *
- * Todo es idempotente (PK (chat_jid, id) + ON CONFLICT DO NOTHING), así que
- * reconexiones y re-entregas no duplican nada. Solo chats 1-a-1: cualquier
- * otro JID se descarta aquí además del shouldIgnoreJid del socket.
+ * Fuentes:
+ *  - "messaging-history.set": volcado que el móvil comparte al emparejar.
+ *  - "messages.upsert": en vivo (`notify`) y re-entregas/ecos (`append`).
+ *  - "messages.update": contenido tardío y ediciones.
+ *  - "contacts.*", "chats.*", "labels.*", "chats.phoneNumberShare": agenda,
+ *    estado de lectura, etiquetas e identidad LID↔teléfono.
+ *
+ * Todo es idempotente (PK (chat_jid, id) + ON CONFLICT DO NOTHING), y cada
+ * mensaje se guarda bajo el jid canónico de la persona (ver canonico.ts).
  */
 import type { Chat, Contact, WAMessage } from "baileys";
 import { getDb, setMeta } from "../db/db";
 import { emitSse } from "../http/sse";
-import { isStorableChatJid, jidToPhone } from "./jidPhone";
 import { avisarEntrante } from "../campanas/entrantes";
 import { encolarSalientePorSiEsManual } from "../campanas/manual";
-import { recordLidFromKey } from "./lidMap";
-import { applyWaRead } from "./readState";
+import { aprenderMapeo, canonicoDe } from "./canonico";
+import { esGrupo } from "./identidad";
+import {
+  aplicarContenidoTardio,
+  aplicarLecturaDeChats,
+  applyContactNames,
+  ingestChatShells,
+  ingestMessages,
+  type IngestResult,
+} from "./ingestCore";
 import { onWaEvent, downloadMedia } from "./socket";
 import { analyzeChat } from "../brain/analyzeChat";
 import { saveMediaBuffer } from "./mediaStore";
-
-type MsgType = "text" | "image" | "audio" | "video" | "document" | "other";
-
-interface ExtractedContent {
-  type: MsgType;
-  text: string | null;
-  /** Solo en tipos de media: para poder descargar el binario después. */
-  mimetype?: string | null;
-  fileName?: string | null;
-}
-
-/**
- * Texto útil o `null` — nunca la cadena vacía. WhatsApp entrega `""` (no
- * `undefined`) en captions que el remitente no escribió, y guardar `""` es peor
- * que guardar `null`: parece dato y no lo es, así que gana a los respaldos con
- * `??` y encima esquiva los filtros `TRIM(text) <> ''` de las consultas.
- */
-function noVacio(v: string | null | undefined): string | null {
-  const t = (v ?? "").trim();
-  return t ? t : null;
-}
-
-/** Desenvuelve wrappers (efímeros, view-once) y clasifica el contenido. */
-function extractContent(msg: WAMessage): ExtractedContent | null {
-  const m = msg.message;
-  if (!m) return null;
-  const inner =
-    m.ephemeralMessage?.message ??
-    m.viewOnceMessage?.message ??
-    m.viewOnceMessageV2?.message ??
-    m.documentWithCaptionMessage?.message ??
-    m;
-
-  if (inner.conversation) return { type: "text", text: inner.conversation };
-  if (inner.extendedTextMessage?.text) return { type: "text", text: inner.extendedTextMessage.text };
-  if (inner.imageMessage) {
-    return { type: "image", text: noVacio(inner.imageMessage.caption), mimetype: inner.imageMessage.mimetype ?? null };
-  }
-  if (inner.videoMessage) {
-    return { type: "video", text: noVacio(inner.videoMessage.caption), mimetype: inner.videoMessage.mimetype ?? null };
-  }
-  if (inner.audioMessage) {
-    return { type: "audio", text: null, mimetype: inner.audioMessage.mimetype ?? null };
-  }
-  if (inner.documentMessage) {
-    /**
-     * ⚠️ `??` NO SIRVE AQUÍ: hay un cliente de WhatsApp de Fran que manda
-     * SIEMPRE `caption: ""` en los documentos (medido sobre la base real: de los
-     * envíos con id de la familia `4A…`, el 100% se guardó con el nombre
-     * perdido, frente a 0% en las familias `3EB0…`/`2A…`). Con `??` esa cadena
-     * vacía gana a `fileName`, se guarda `text=""`, y todo lo que detecta por
-     * NOMBRE DE DOCUMENTO —"programa enviado" del CRM, que además filtra por
-     * `TRIM(text) <> ''`— se queda ciego: el PDF se envió pero no se ve.
-     * Caso real: Silvia Martínez, PDF del SBA no detectado (2026-08-13).
-     */
-    return {
-      type: "document",
-      text: noVacio(inner.documentMessage.caption) ?? noVacio(inner.documentMessage.fileName),
-      mimetype: inner.documentMessage.mimetype ?? null,
-      fileName: noVacio(inner.documentMessage.fileName),
-    };
-  }
-  if (inner.stickerMessage) return { type: "other", text: null };
-  // Plumbing del protocolo (reacciones, borrados, claves…): no es contenido.
-  if (
-    inner.protocolMessage ||
-    inner.reactionMessage ||
-    inner.pollUpdateMessage ||
-    inner.senderKeyDistributionMessage
-  ) {
-    return null;
-  }
-  return { type: "other", text: null };
-}
-
-function previewOf(content: ExtractedContent): string {
-  if (content.text) return content.text.slice(0, 120);
-  switch (content.type) {
-    case "image":
-      return "📷 Foto";
-    case "audio":
-      return "🎤 Audio";
-    case "video":
-      return "🎬 Vídeo";
-    case "document":
-      return "📄 Documento";
-    default:
-      return "…";
-  }
-}
-
-/** messageTimestamp puede ser number | Long | bigint según la ruta de entrada. */
-function tsOf(v: unknown): number {
-  if (typeof v === "number") return v;
-  if (typeof v === "bigint") return Number(v);
-  if (v && typeof (v as { toNumber?: () => number }).toNumber === "function") {
-    return (v as { toNumber: () => number }).toNumber();
-  }
-  return Math.floor(Date.now() / 1000);
-}
-
-/* ------------------------------ statements -------------------------------- */
-
-function statements() {
-  const db = getDb();
-  return {
-    upsertMessage: db.prepare(
-      `INSERT INTO messages(chat_jid, id, from_me, ts, type, text, media_path, media_mime, raw_json)
-       VALUES (@chat_jid, @id, @from_me, @ts, @type, @text, NULL, NULL, @raw_json)
-       ON CONFLICT(chat_jid, id) DO NOTHING`
-    ),
-    upsertChat: db.prepare(
-      `INSERT INTO chats(jid, phone, display_name, last_message_at, last_message_preview, created_at, updated_at)
-       VALUES (@jid, @phone, @display_name, @last_message_at, @last_message_preview, @now, @now)
-       ON CONFLICT(jid) DO UPDATE SET
-         display_name = COALESCE(NULLIF(excluded.display_name, ''), chats.display_name),
-         last_message_at = MAX(COALESCE(chats.last_message_at, 0), COALESCE(excluded.last_message_at, 0)),
-         last_message_preview = CASE
-           WHEN COALESCE(excluded.last_message_at, 0) >= COALESCE(chats.last_message_at, 0)
-             AND excluded.last_message_preview IS NOT NULL
-           THEN excluded.last_message_preview
-           ELSE chats.last_message_preview END,
-         updated_at = excluded.updated_at`
-    ),
-    updateName: db.prepare(
-      `UPDATE chats SET display_name = @name, updated_at = @now
-       WHERE jid = @jid AND (display_name IS NULL OR display_name = '' OR @overwrite = 1)`
-    ),
-  };
-}
-
-/* -------------------------------- ingesta --------------------------------- */
-
-interface IngestResult {
-  /** JIDs con mensajes nuevos realmente insertados. */
-  touched: Set<string>;
-  /** JIDs con contenido válido en el lote AUNQUE el mensaje ya existiera
-   *  (re-entregas de WhatsApp): el chat SÍ movió preview/last_message_at,
-   *  pero antes no se emitía ningún evento y la UI no se enteraba hasta el
-   *  poll de 45s (auditoría realtime 2026-07-29). */
-  seen: Set<string>;
-  /** Mensajes de media recién insertados, para descargar el binario DESPUÉS de
-   *  la transacción (I/O de red; no puede vivir dentro de un db.transaction
-   *  síncrono). Solo se rellena si `fetchMedia` (ver más abajo). */
-  mediaCandidates: Array<{ jid: string; id: string; msg: WAMessage; mimetype: string | null; fileName: string | null }>;
-  /**
-   * Mensajes de TEXTO recién insertados que nos ha escrito ALGUIEN (from_me=0),
-   * para avisar al dashboard DESPUÉS de la transacción (es una llamada de red).
-   * Solo se rellena con `enVivo` — durante el history-sync se reprocesan miles de
-   * mensajes viejos y notificarlos daría de baja a gente por algo que escribió
-   * hace meses.
-   */
-  entrantes: Array<{ telefono: string; texto: string; jid: string; waMsgId: string }>;
-  /**
-   * Mensajes SALIENTES recien insertados: candidatos a ser una TOMA MANUAL (un
-   * companero escribiendo a mano en un chat de campana).
-   *
-   * Solo llegan aqui los que NO estaban ya en la base, y todo lo que sale por
-   * este servicio se guarda antes del eco: asi que en la practica son los
-   * escritos desde el WhatsApp de Fran (movil, WhatsApp Web, otro dispositivo).
-   * Aun asi NO se dan por manuales aqui — se comprueba contra la marca de agua
-   * con retardo, ver `campanas/manual.ts`.
-   */
-  salientes: Array<{ jid: string; waMsgId: string; ts: number }>;
-}
-
-/**
- * `fetchMedia`: recolecta candidatos para descargar el binario. Se activa SOLO
- * para mensajes EN VIVO (`messages.upsert` tipo "notify"), nunca para el
- * history-sync masivo al reconectar — descargar cientos de adjuntos de golpe
- * saturaría el CDN de WhatsApp para nada: el histórico ya carece de las claves
- * necesarias en su inmensa mayoría (auditoría 2026-08-06), así que el intento
- * fallaría casi siempre y solo el tráfico en vivo importa de verdad.
- */
-/**
- * `senderPn` → TELÉFONO canónico de 9 dígitos.
- *
- * Baileys lo da como jid ("34657955578@s.whatsapp.net"), pero también puede
- * llegar sin sufijo. Se aceptan las dos formas y se devuelve null si no sale un
- * móvil español utilizable: es mejor perder el aviso que mandarle el guion a un
- * número inventado.
- */
-function telefonoDeSenderPn(senderPn: string | null): string | null {
-  if (!senderPn) return null;
-  const conArroba = senderPn.includes("@") ? senderPn : `${senderPn}@s.whatsapp.net`;
-  return jidToPhone(conArroba);
-}
-
-function ingestMessages(
-  messages: WAMessage[],
-  opts?: { fetchMedia?: boolean; enVivo?: boolean; detectarManual?: boolean },
-): IngestResult {
-  const db = getDb();
-  const stmts = statements();
-  const touched = new Set<string>();
-  const seen = new Set<string>();
-  const mediaCandidates: IngestResult["mediaCandidates"] = [];
-  const entrantes: IngestResult["entrantes"] = [];
-  const salientes: IngestResult["salientes"] = [];
-  const now = Math.floor(Date.now() / 1000);
-  /** jid `@lid` → teléfono que venía en key.senderPn (se aplica tras la transacción). */
-  const lidPending = new Map<string, string>();
-
-  const run = db.transaction((batch: WAMessage[]) => {
-    for (const msg of batch) {
-      const jid = msg.key?.remoteJid;
-      if (!jid || !isStorableChatJid(jid) || msg.broadcast) continue;
-      const content = extractContent(msg);
-      if (!content) continue;
-
-      const ts = tsOf(msg.messageTimestamp);
-      const preview = previewOf(content);
-      const id = msg.key.id ?? `${ts}-${Math.random().toString(36).slice(2)}`;
-      seen.add(jid);
-      stmts.upsertChat.run({
-        jid,
-        phone: jidToPhone(jid),
-        display_name: !msg.key.fromMe ? (msg.pushName ?? "") : "",
-        last_message_at: ts,
-        last_message_preview: preview,
-        now,
-      });
-      const inserted = stmts.upsertMessage.run({
-        chat_jid: jid,
-        id,
-        from_me: msg.key.fromMe ? 1 : 0,
-        ts,
-        type: content.type,
-        text: content.text,
-        raw_json: JSON.stringify(msg),
-      });
-      if (inserted.changes > 0) {
-        touched.add(jid);
-        if (opts?.fetchMedia && content.type !== "text" && content.type !== "other") {
-          mediaCandidates.push({ jid, id, msg, mimetype: content.mimetype ?? null, fileName: content.fileName ?? null });
-        }
-        // Nos ha escrito ALGUIEN, en vivo y con texto: candidato a marcar
-        // respuesta de campaña o a darle de baja si pide que no le escribamos.
-        if (opts?.enVivo && !msg.key.fromMe && content.type === "text" && content.text) {
-          /**
-           * ⚠️ `senderPn` ES UN JID, no un teléfono: llega como
-           * "34657955578@s.whatsapp.net". Se pasaba EN CRUDO como `telefono`, y
-           * el dashboard lo canonizaba a "+34657955578" —11 dígitos, así que lo
-           * tomaba por un internacional— que NO casa con el "657955578"
-           * guardado en la campaña.
-           *
-           * Consecuencia medida en producción: TODA respuesta que entraba por un
-           * chat `@lid` se descartaba en silencio. `campanasConversacionalesDe`
-           * no encontraba a nadie, el guion no avanzaba y no se conseguía
-           * ninguna dirección postal — que es el objetivo entero de la campaña.
-           * En los logs se veía la IA clasificando "34657955578@s.whatsapp.net"
-           * como si ese fuera el número de alguien.
-           */
-          const senderPnRaw = (msg.key as { senderPn?: string } | undefined)?.senderPn ?? null;
-          const tel = jidToPhone(jid) ?? telefonoDeSenderPn(senderPnRaw);
-          if (tel) entrantes.push({ telefono: tel, texto: content.text, jid, waMsgId: id });
-        }
-        /**
-         * SALIENTE nuevo: candidato a toma manual. Se recoge de cualquier tipo
-         * (una foto mandada a mano tambien es coger la conversacion) y sin
-         * juzgar nada: quien decide si era la automatizacion o una persona es
-         * `campanas/manual.ts`, y con retardo, porque este eco puede adelantar
-         * a la marca de agua del propio envio automatico.
-         */
-        if (opts?.detectarManual && msg.key.fromMe) {
-          salientes.push({ jid, waMsgId: id, ts });
-        }
-      }
-      // Chats `@lid`: el JID no lleva el número, pero Baileys nos da el teléfono
-      // real en key.senderPn → se materializa el mapeo y se rellena chats.phone
-      // (solo si estaba vacío), para poder casarlos con el CRM por teléfono.
-      const senderPn = (msg.key as { senderPn?: string } | undefined)?.senderPn;
-      if (senderPn) lidPending.set(jid, senderPn);
-    }
-  });
-  run(messages);
-  // Fuera de la transacción de mensajes (recordLidFromKey abre las suyas).
-  for (const [jid, pn] of lidPending) recordLidFromKey(jid, pn);
-  return { touched, seen, mediaCandidates, entrantes, salientes };
-}
 
 /**
  * Descarga el binario de cada candidato y actualiza `media_path`/`media_mime`.
@@ -326,64 +60,17 @@ async function downloadAndAttachMedia(candidates: IngestResult["mediaCandidates"
   return listos;
 }
 
-/** Crea filas de chat "vacías" a partir del listado del history-sync, aunque
- *  ese chat no traiga mensajes en el mismo lote (así el chat aparece igual). */
-function ingestChatShells(chats: Chat[]): number {
-  const db = getDb();
-  const stmts = statements();
-  const now = Math.floor(Date.now() / 1000);
-  let n = 0;
-  const run = db.transaction((batch: Chat[]) => {
-    for (const chat of batch) {
-      const jid = chat.id;
-      if (!jid || !isStorableChatJid(jid)) continue;
-      const ts =
-        typeof chat.conversationTimestamp === "number"
-          ? chat.conversationTimestamp
-          : chat.conversationTimestamp
-            ? Number(chat.conversationTimestamp)
-            : null;
-      stmts.upsertChat.run({
-        jid,
-        phone: jidToPhone(jid),
-        display_name: chat.name ?? "",
-        last_message_at: ts,
-        last_message_preview: null,
-        now,
-      });
-      n++;
-    }
-  });
-  run(chats);
-  // El estado de lectura se aplica FUERA de la transacción de shells: hace sus
-  // propias consultas por chat y no debe alargar el lock de escritura.
-  for (const chat of chats) {
-    if (chat?.id && isStorableChatJid(chat.id)) applyWaRead(chat.id, chat.unreadCount);
-  }
-  return n;
-}
-
-function applyContactNames(contacts: Array<Partial<Contact>>, overwrite: boolean): void {
-  const stmts = statements();
-  const now = Math.floor(Date.now() / 1000);
-  for (const c of contacts) {
-    const jid = c.id;
-    if (!jid || !isStorableChatJid(jid)) continue;
-    const name = c.name ?? c.verifiedName ?? c.notify;
-    if (!name) continue;
-    stmts.updateName.run({ jid, name, now, overwrite: overwrite ? 1 : 0 });
-  }
-}
-
 /* ------------- Fransua EN DIRECTO: re-análisis al llegar mensaje ------------- */
-// Cuando entra un mensaje NUEVO en vivo (type "notify", NO el backfill de
-// historial), re-analizamos ese chat tras un pequeño anti-rebote: deja que la
-// ráfaga se asiente (WhatsApp llega a golpes) y evita saturar la IA. Un timer por
-// jid; si llegan más mensajes, se reinicia y solo analiza cuando la charla pausa.
+// Cuando entra un mensaje NUEVO en vivo, re-analizamos ese chat tras un pequeño
+// anti-rebote: deja que la ráfaga se asiente (WhatsApp llega a golpes) y evita
+// saturar la IA. Un timer por jid; si llegan más mensajes, se reinicia y solo
+// analiza cuando la charla pausa. Los grupos no se analizan: la inteligencia de
+// Fransua es por lead.
 const LIVE_ANALYZE_DEBOUNCE_MS = 20_000;
 const liveAnalyzeTimers = new Map<string, NodeJS.Timeout>();
 
 function scheduleLiveAnalyze(jid: string): void {
+  if (esGrupo(jid)) return;
   const prev = liveAnalyzeTimers.get(jid);
   if (prev) clearTimeout(prev);
   liveAnalyzeTimers.set(
@@ -399,6 +86,38 @@ function scheduleLiveAnalyze(jid: string): void {
   );
 }
 
+/**
+ * IDS DE MENSAJE ENTRANTE ya avisados, con caducidad.
+ *
+ * Primera línea de defensa contra el doble aviso. La segunda está en el
+ * dashboard, que guarda el último id procesado por persona — hace falta también
+ * allí porque este mapa se pierde al reiniciar el servicio.
+ */
+const avisados = new Map<string, number>();
+const AVISADO_TTL_MS = 10 * 60_000;
+
+function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: string }>(es: T[]): T[] {
+  const ahora = Date.now();
+  // Limpieza perezosa: sin esto el mapa crece sin techo en un proceso que vive semanas.
+  if (avisados.size > 5000) {
+    for (const [k, t] of avisados) if (ahora - t > AVISADO_TTL_MS) avisados.delete(k);
+  }
+  const out: T[] = [];
+  for (const e of es) {
+    // La clave lleva el TELÉFONO además del id: el mismo id en dos chats gemelos
+    // es el mismo mensaje de la misma persona, que es justo lo que hay que colapsar.
+    const clave = `${e.telefono}|${e.waMsgId}`;
+    const visto = avisados.get(clave);
+    if (visto !== undefined && ahora - visto < AVISADO_TTL_MS) {
+      console.log(`[campanas] aviso DUPLICADO ignorado: ${e.telefono} · msg ${e.waMsgId}`);
+      continue;
+    }
+    avisados.set(clave, ahora);
+    out.push(e);
+  }
+  return out;
+}
+
 /** Registra los listeners de ingesta en la fachada (sobreviven reconexiones). */
 export function registerIngest(): void {
   onWaEvent("messaging-history.set", (payload) => {
@@ -408,9 +127,11 @@ export function registerIngest(): void {
         progress?: number | null;
         syncType?: number;
       };
-      const shells = ingestChatShells((chats as Chat[]) ?? []);
-      const result = ingestMessages(messages ?? []);
+      // Primero los contactos (nombres y pares teléfono↔LID de la agenda) y los
+      // chats (pnJid/lidJid): así los mensajes ya nacen bajo el jid canónico.
       applyContactNames(contacts ?? [], false);
+      const shells = ingestChatShells((chats as Chat[]) ?? []);
+      const result = ingestMessages(messages ?? [], { modo: "history" });
       const now = Math.floor(Date.now() / 1000);
       setMeta("last_history_sync", String(now));
       console.log(
@@ -425,74 +146,28 @@ export function registerIngest(): void {
     }
   });
 
-/**
- * IDS DE MENSAJE ENTRANTE ya avisados, con caducidad.
- *
- * Primera línea de defensa contra el doble aviso. La segunda está en el
- * dashboard, que guarda el último id procesado por persona — hace falta también
- * allí porque este mapa se pierde al reiniciar el servicio.
- */
-const avisados = new Map<string, number>();
-const AVISADO_TTL_MS = 10 * 60_000;
-
-function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: string }>(es: T[]): T[] {
-  const ahora = Date.now();
-  // Limpieza perezosa: sin esto el mapa crece sin techo en un proceso que vive
-  // semanas.
-  if (avisados.size > 5000) {
-    for (const [k, t] of avisados) if (ahora - t > AVISADO_TTL_MS) avisados.delete(k);
-  }
-  const out: T[] = [];
-  for (const e of es) {
-    // La clave lleva el TELÉFONO además del id: el mismo id en dos chats gemelos
-    // es el mismo mensaje de la misma persona, que es justo lo que hay que
-    // colapsar.
-    const clave = `${e.telefono}|${e.waMsgId}`;
-    const visto = avisados.get(clave);
-    if (visto !== undefined && ahora - visto < AVISADO_TTL_MS) {
-      console.log(`[campanas] aviso DUPLICADO ignorado: ${e.telefono} · msg ${e.waMsgId}`);
-      continue;
-    }
-    avisados.set(clave, ahora);
-    out.push(e);
-  }
-  return out;
-}
-
   onWaEvent("messages.upsert", ({ messages, type }) => {
     if (type !== "notify" && type !== "append") return;
     try {
-      // Descarga de media SOLO en tráfico "notify" (en vivo, ver comentario de
-      // ingestMessages): así una foto/audio recién llegado se guarda al vuelo.
       /**
-       * `detectarManual` va en "notify" Y en "append": un mensaje escrito desde
-       * el movil de Fran puede entrar por cualquiera de los dos, y perderselo
-       * significa que la automatizacion siga hablando encima de el. La
-       * proteccion contra juzgar mensajes viejos no es el tipo de evento, es la
-       * comprobacion de FRESCURA de `encolarSalientePorSiEsManual`.
+       * `append` NO es solo historial: WhatsApp re-entrega así lo que llegó
+       * mientras el sidecar estaba caído (cada deploy son 30-90 s) y el eco de
+       * nuestros propios envíos. El núcleo decide por antigüedad qué tratar como
+       * en vivo (media, campañas, análisis) — ver VENTANA_VIVO_S.
        */
-      const result = ingestMessages(messages, {
-        fetchMedia: type === "notify",
-        enVivo: type === "notify",
-        detectarManual: true,
-      });
+      const result = ingestMessages(messages, { modo: type });
       /**
        * Bajas y respuestas de campaña: fuera de la transacción y sin esperar.
-       *
-       * ⚠️ SE DEDUPLICA POR ID DE MENSAJE. La misma persona puede tener DOS chats
-       * (uno `@lid` y uno por teléfono, ver `wa-chats-gemelos`), y el mismo
-       * mensaje entra por los dos: son dos filas en `messages` porque la clave
-       * es (chat_jid, id), así que se insertaban las dos y se avisaba DOS VECES.
-       * Consecuencia real medida en producción: el guion avanzaba dos veces y a
-       * Javier, a Enriqueta y a Julio les llegó la reconducción DUPLICADA.
+       * Se deduplica por (teléfono, id): el mismo mensaje puede llegar por dos
+       * caminos y avisar dos veces avanzaba el guion dos veces.
        */
       for (const e of dedupeEntrantes(result.entrantes)) {
         void avisarEntrante(e.telefono, e.texto, e.jid, e.waMsgId);
       }
       /**
-       * TOMA MANUAL: un mensaje que sale sin marca de automatico lo ha escrito
-       * una persona, y entonces la automatizacion se retira de ese chat
-       * (peticion del usuario 2026-09-08). Se encola, no se decide aqui.
+       * TOMA MANUAL: un mensaje que sale sin marca de automático lo ha escrito
+       * una persona, y entonces la automatización se retira de ese chat
+       * (petición del usuario 2026-09-08). Se encola, no se decide aquí.
        */
       for (const s of result.salientes) encolarSalientePorSiEsManual(s);
       console.log(
@@ -500,17 +175,8 @@ function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: s
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")
       );
       for (const jid of result.touched) emitSse({ type: "message.new", jid });
-      // Re-entregas (mensaje ya existente): el chat movió preview/orden pero no
-      // hubo insert → avisa a la UI con chat.updated (refresca la lista, sin
-      // disparar el refetch de conversación). Solo en "notify" para no hacer
-      // ruido con lotes de sincronización.
-      if (type === "notify") {
-        for (const jid of result.seen) {
-          if (!result.touched.has(jid)) emitSse({ type: "chat.updated", jid });
-        }
-        // Fransua EN DIRECTO: solo mensajes nuevos reales, no el backfill.
-        for (const jid of result.touched) scheduleLiveAnalyze(jid);
-      }
+      // Fransua EN DIRECTO: solo mensajes nuevos y recientes, no el backfill.
+      for (const jid of result.vivos) scheduleLiveAnalyze(jid);
       // Descarga fuera de la ruta síncrona (I/O de red): cuando termine cada
       // fichero, un segundo `message.new` hace que la burbuja pase de "etiqueta
       // gris" a la foto/audio real sin que el usuario recargue nada.
@@ -524,47 +190,12 @@ function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: s
     }
   });
 
-  // CONTENIDO QUE LLEGA TARDE (auditoría realtime 2026-07-29): ediciones de
-  // mensaje y cuerpos que WhatsApp entrega después del upsert original viajan
-  // por `messages.update` con `update.message`. Antes no había listener → ese
-  // contenido no se guardaba nunca (mensaje "que no llega" ni reabriendo).
-  // Actualiza el texto si la fila existe, la crea si no, y avisa a la UI.
+  // CONTENIDO QUE LLEGA TARDE: ediciones de mensaje y cuerpos que WhatsApp
+  // entrega después del upsert original viajan por `messages.update` con
+  // `update.message`. Se guardan en el chat canónico y se avisa a la UI.
   onWaEvent("messages.update", (updates) => {
     try {
-      const db = getDb();
-      const stmts = statements();
-      const updateContent = db.prepare(
-        `UPDATE messages SET type = @type, text = @text, raw_json = @raw_json WHERE chat_jid = @chat_jid AND id = @id`
-      );
-      const touched = new Set<string>();
-      for (const u of updates) {
-        const jid = u.key?.remoteJid;
-        const upd = u.update as { message?: WAMessage["message"] } | undefined;
-        if (!jid || !isStorableChatJid(jid) || !upd?.message) continue;
-        // Una EDICIÓN viene envuelta en protocolMessage.editedMessage y apunta
-        // al id del mensaje ORIGINAL; el contenido tardío normal viene directo.
-        const proto = upd.message.protocolMessage;
-        const body = proto?.editedMessage ?? upd.message;
-        const targetId = proto?.key?.id ?? u.key?.id;
-        if (!targetId) continue;
-        const content = extractContent({ key: u.key, message: body } as WAMessage);
-        if (!content) continue;
-        const now = Math.floor(Date.now() / 1000);
-        const raw = JSON.stringify({ key: u.key, message: body });
-        const updated = updateContent.run({ type: content.type, text: content.text, raw_json: raw, chat_jid: jid, id: targetId });
-        if (updated.changes === 0) {
-          // No estaba (p.ej. el original nunca se pudo descifrar): créala.
-          stmts.upsertChat.run({
-            jid, phone: jidToPhone(jid), display_name: "",
-            last_message_at: now, last_message_preview: previewOf(content), now,
-          });
-          stmts.upsertMessage.run({
-            chat_jid: jid, id: targetId, from_me: u.key?.fromMe ? 1 : 0,
-            ts: now, type: content.type, text: content.text, raw_json: raw,
-          });
-        }
-        touched.add(jid);
-      }
+      const touched = aplicarContenidoTardio(updates as Array<{ key: WAMessage["key"]; update: Partial<WAMessage> }>);
       for (const jid of touched) emitSse({ type: "message.new", jid });
     } catch (err) {
       console.error("[ingest] error procesando messages.update:", (err as Error).message);
@@ -572,23 +203,15 @@ function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: s
   });
 
   onWaEvent("contacts.upsert", (contacts) => applyContactNames(contacts, false));
-  onWaEvent("contacts.update", (contacts) => applyContactNames(contacts, true));
+  onWaEvent("contacts.update", (contacts) => applyContactNames(contacts as Array<Partial<Contact>>, true));
 
   // ESTADO DE LECTURA REAL (petición del usuario 2026-08-01). WhatsApp sincroniza
   // su `unreadCount` entre dispositivos: cuando Fran abre un chat en el móvil o
   // en WhatsApp Web, llega aquí un `chats.update` con unreadCount 0. Lo
-  // traducimos a la marca de agua `wa_read_at` (ver src/wa/readState.ts) para
-  // que el globo verde del teléfono flotante se apague igual que allí.
+  // traducimos a la marca de agua `wa_read_at` (ver src/wa/readState.ts).
   const aplicarLectura = (updates: Array<{ id?: string | null; unreadCount?: number | null }>) => {
     try {
-      const tocados: string[] = [];
-      for (const u of updates) {
-        const jid = u?.id;
-        if (!jid || !isStorableChatJid(jid)) continue;
-        if (applyWaRead(jid, u.unreadCount)) tocados.push(jid);
-      }
-      // Solo se avisa a la interfaz si el contador ha cambiado de verdad.
-      for (const jid of tocados) emitSse({ type: "chat.updated", jid });
+      for (const jid of aplicarLecturaDeChats(updates)) emitSse({ type: "chat.updated", jid });
     } catch (err) {
       console.error("[ingest] estado de lectura:", (err as Error).message);
     }
@@ -596,10 +219,19 @@ function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: s
   onWaEvent("chats.update", (updates) => aplicarLectura(updates as Array<Partial<Chat>>));
   onWaEvent("chats.upsert", (chats) => aplicarLectura(chats as Array<Partial<Chat>>));
 
+  // El contacto ha compartido su número: WhatsApp nos dice qué teléfono hay
+  // detrás de un @lid. Si tenía chat propio, se funde en el del teléfono.
+  onWaEvent("chats.phoneNumberShare", ({ lid, jid }) => {
+    try {
+      const r = aprenderMapeo(lid, jid, "phoneNumberShare");
+      if (r.fusionado) emitSse({ type: "chats.synced" });
+    } catch (err) {
+      console.error("[ingest] phoneNumberShare:", (err as Error).message);
+    }
+  });
+
   // ETIQUETAS de WhatsApp Business — sentido WHATSAPP → AQUÍ (la escritura en
   // sentido contrario vive en src/wa/labels.ts, el único fichero autorizado).
-  // Emiten `labels.updated` para que la interfaz refresque al instante: si Fran
-  // etiqueta desde el móvil, lo ve en el teléfono flotante sin recargar.
   onWaEvent("labels.edit", (label) => {
     try {
       getDb()
@@ -624,19 +256,19 @@ function dedupeEntrantes<T extends { telefono: string; texto: string; waMsgId: s
       const assoc = association as { type?: string; chatId?: string; labelId?: string; messageId?: string };
       // Solo asociaciones de CHAT (no de mensaje): type "label_jid".
       if (assoc?.type !== "label_jid" || !assoc.chatId || !assoc.labelId) return;
+      // La etiqueta puede llegar con el jid @lid de la persona: va al canónico.
+      const chatId = canonicoDe(assoc.chatId) || assoc.chatId;
       const db = getDb();
       if (type === "add") {
         // Si la etiqueta aún no está en el catálogo (su `labels.edit` no llegó o
         // se perdió), se siembra un hueco para que el JOIN de /chats NO la
         // descarte: mejor una etiqueta con nombre pendiente que una invisible.
         db.prepare(`INSERT OR IGNORE INTO wa_labels(id, name, color, deleted) VALUES (?, '', 0, 0)`).run(assoc.labelId);
-        db.prepare(`INSERT OR IGNORE INTO wa_chat_labels(chat_jid, label_id) VALUES (?, ?)`).run(assoc.chatId, assoc.labelId);
+        db.prepare(`INSERT OR IGNORE INTO wa_chat_labels(chat_jid, label_id) VALUES (?, ?)`).run(chatId, assoc.labelId);
       } else {
-        db.prepare(`DELETE FROM wa_chat_labels WHERE chat_jid = ? AND label_id = ?`).run(assoc.chatId, assoc.labelId);
+        db.prepare(`DELETE FROM wa_chat_labels WHERE chat_jid = ? AND label_id = ?`).run(chatId, assoc.labelId);
       }
-      // La lista de chats muestra las etiquetas → refresca esa fila, y avisa del
-      // catálogo por si el selector abierto tiene que repintarse.
-      emitSse({ type: "chat.updated", jid: assoc.chatId });
+      emitSse({ type: "chat.updated", jid: chatId });
       emitSse({ type: "labels.updated" });
     } catch (err) {
       console.error("[ingest] labels.association:", (err as Error).message);

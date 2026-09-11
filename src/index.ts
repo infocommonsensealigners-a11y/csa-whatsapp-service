@@ -4,6 +4,7 @@
  */
 import { config, ensureDataDirs } from "./config";
 import { openDb } from "./db/db";
+import { fusionInicial } from "./db/fusion";
 import { startHttpServer } from "./http/server";
 import { emitSse } from "./http/sse";
 import { registerIngest } from "./wa/ingest";
@@ -11,7 +12,7 @@ import { seedHistoricalRead } from "./wa/readState";
 import { startWhatsapp, stopWhatsapp, onStateChange } from "./wa/socket";
 import { ensureClaudeAuth } from "./brain/secrets";
 import { startLeadLinkingScheduler } from "./brain/linkLeadsScheduler";
-import { startBackupScheduler } from "./brain/backup";
+import { runSidecarBackup, startBackupScheduler } from "./brain/backup";
 import { startLearningScheduler } from "./brain/learning";
 import { arrancarWorkerCampanas } from "./campanas/worker";
 import { repasarTomasManuales } from "./campanas/manual";
@@ -19,6 +20,21 @@ import { repasarTomasManuales } from "./campanas/manual";
 async function main(): Promise<void> {
   ensureDataDirs();
   openDb();
+
+  /**
+   * FUSIÓN DE CHATS GEMELOS (decisión del usuario 2026-09-11: «haz la fusión»).
+   * Una persona = una fila: los chats `@lid` con teléfono conocido se funden en
+   * el chat del teléfono ANTES de arrancar Baileys, con copia consistente de la
+   * base en el volumen. Idempotente: en arranques siguientes el plan sale a 0.
+   * `FUSION_GEMELOS=off` deja solo el informe en el log, sin tocar nada.
+   */
+  try {
+    const aplicar = (process.env.FUSION_GEMELOS ?? "on").trim().toLowerCase() !== "off";
+    await fusionInicial({ aplicar, copiaExtra: () => runSidecarBackup(true) });
+  } catch (e) {
+    console.error("[fusion] falló al arrancar (el servicio sigue):", (e as Error).message);
+  }
+
   registerIngest();
 
   // Línea base ÚNICA del estado de lectura: pone a cero los globos de no leídos

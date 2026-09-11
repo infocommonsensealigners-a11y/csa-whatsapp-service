@@ -21,6 +21,7 @@ import fs from "node:fs";
 import { getDb } from "../../db/db";
 import { downloadMedia, getWaState } from "../../wa/socket";
 import { saveMediaBuffer, MEDIA_MAX_BYTES } from "../../wa/mediaStore";
+import { jidDeRuta } from "./chats";
 
 interface MediaRow {
   media_path: string | null;
@@ -39,7 +40,8 @@ function fileNameFor(row: MediaRow, id: string): string {
 
 export function registerMediaRoutes(app: FastifyInstance): void {
   app.get("/media/:jid/:id", async (request, reply) => {
-    const { jid, id } = request.params as { jid: string; id: string };
+    const { jid: jidParam, id } = request.params as { jid: string; id: string };
+    const jid = jidDeRuta(jidParam);
     const row = getDb()
       .prepare(`SELECT media_path, media_mime, type, text FROM messages WHERE chat_jid = ? AND id = ?`)
       .get(jid, id) as MediaRow | undefined;
@@ -79,7 +81,8 @@ export function registerMediaRoutes(app: FastifyInstance): void {
   /* ------------------ POST /media/:jid/:id/fetch (bajo demanda) ------------------ */
 
   app.post("/media/:jid/:id/fetch", async (request, reply) => {
-    const { jid, id } = request.params as { jid: string; id: string };
+    const { jid: jidParam, id } = request.params as { jid: string; id: string };
+    const jid = jidDeRuta(jidParam);
     const db = getDb();
     const row = db
       .prepare(`SELECT media_path, media_mime, type, text, raw_json FROM messages WHERE chat_jid = ? AND id = ?`)

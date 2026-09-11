@@ -24,6 +24,8 @@ import { isStorableChatJid, jidToPhone } from "./jidPhone";
 import { avisarSalienteManual } from "../campanas/manual";
 import { getActiveSocket, lookupLids } from "./socket";
 import { MEDIA_MAX_BYTES, extFromMime, saveMediaBuffer } from "./mediaStore";
+import { aprenderMapeo, canonicoDe } from "./canonico";
+import { registrarMensajePropio, tsOf } from "./ingestCore";
 
 const MIN_GAP_MS = 1_500;
 const WINDOW_MS = 5 * 60_000;
@@ -100,18 +102,22 @@ function ensureAuditTable(): void {
  *    genera errores en cadena y es una señal de lista comprada.
  */
 async function requireOnlineChat(
-  jid: string,
+  jidCrudo: string,
   permitirChatNuevo: boolean,
 ): Promise<
-  | { ok: true; sock: NonNullable<ReturnType<typeof getActiveSocket>>; esNuevo: boolean }
+  | { ok: true; sock: NonNullable<ReturnType<typeof getActiveSocket>>; esNuevo: boolean; jid: string }
   | { ok: false; error: string; code: "invalid" | "unknown-chat" | "offline" }
 > {
-  if (!isStorableChatJid(jid)) return { ok: false, error: "Destino no válido (solo chats 1-a-1).", code: "invalid" };
+  // Se trabaja siempre con el jid CANÓNICO de la persona (un @lid con teléfono
+  // conocido cae en su chat del teléfono): así el mensaje se guarda en la misma
+  // fila en la que lo encontrará el eco de WhatsApp.
+  const jid = canonicoDe(jidCrudo);
+  if (!jid || !isStorableChatJid(jid)) return { ok: false, error: "Destino no válido (solo chats 1-a-1).", code: "invalid" };
   const sock = getActiveSocket();
   if (!sock) return { ok: false, error: "WhatsApp no está conectado ahora mismo.", code: "offline" };
 
   const chat = getDb().prepare("SELECT jid FROM chats WHERE jid = ?").get(jid) as { jid: string } | undefined;
-  if (chat) return { ok: true, sock, esNuevo: false };
+  if (chat) return { ok: true, sock, esNuevo: false, jid };
 
   if (!permitirChatNuevo) {
     return { ok: false, error: "Ese chat no está en el historial.", code: "unknown-chat" };
@@ -123,7 +129,10 @@ async function requireOnlineChat(
   if (!existe) {
     return { ok: false, error: "Ese número no está en WhatsApp.", code: "unknown-chat" };
   }
-  return { ok: true, sock, esNuevo: true };
+  // La consulta devuelve el LID de ese teléfono: se aprende ya, para que su
+  // respuesta (que llegará por el @lid) caiga en este mismo chat.
+  for (const r of res) if (r.lid) aprenderMapeo(r.lid, jid, "onWhatsApp");
+  return { ok: true, sock, esNuevo: true, jid };
 }
 
 /**
@@ -145,7 +154,7 @@ function asegurarChat(jid: string, ts: number): void {
 
 /** Envía TEXTO plano a un chat 1-a-1 existente. Escrito a mano por una persona. */
 export async function sendText(
-  jid: string,
+  jidPedido: string,
   rawText: string,
   actor: string | null,
   opts: { permitirChatNuevo?: boolean } = {},
@@ -154,8 +163,9 @@ export async function sendText(
   if (!text || text.length > 4096) {
     return { ok: false, error: "El mensaje debe tener entre 1 y 4096 caracteres.", code: "invalid" };
   }
-  const known = await requireOnlineChat(jid, opts.permitirChatNuevo === true);
+  const known = await requireOnlineChat(jidPedido, opts.permitirChatNuevo === true);
   if (!known.ok) return known;
+  const jid = known.jid;
   const rate = checkRate();
   if (!rate.ok) return { ok: false, error: rate.error, code: "rate" };
 
@@ -163,23 +173,19 @@ export async function sendText(
   try {
     const result = await known.sock.sendMessage(jid, { text });
     markSent();
-    const ts = Math.floor(Date.now() / 1000);
+    const now = Math.floor(Date.now() / 1000);
+    // La hora es la del mensaje según WhatsApp, no la del reloj local tras el
+    // `await`: con `ahora` el eco (mismo id, hora real) quedaba con otro ts y el
+    // chat aparecía adelantado unos segundos respecto a su último mensaje.
+    const ts = tsOf(result?.messageTimestamp, now);
     const id = result?.key?.id ?? `sent-${ts}-${Math.random().toString(36).slice(2)}`;
     // Conversación estrenada: sin la fila de `chats` el mensaje queda huérfano
     // y el teléfono flotante no la enseñaría.
     if (known.esNuevo) asegurarChat(jid, ts);
 
-    // Persistencia inmediata (el eco de messages.upsert deduplica por PK).
-    db.prepare(
-      `INSERT INTO messages(chat_jid, id, from_me, ts, type, text, media_path, media_mime, raw_json)
-       VALUES (?, ?, 1, ?, 'text', ?, NULL, NULL, NULL)
-       ON CONFLICT(chat_jid, id) DO NOTHING`
-    ).run(jid, id, ts, text);
-    db.prepare(
-      `UPDATE chats SET last_message_at = MAX(COALESCE(last_message_at, 0), ?),
-                        last_message_preview = ?, updated_at = ?
-       WHERE jid = ?`
-    ).run(ts, text.slice(0, 120), ts, jid);
+    // Persistencia inmediata por el mismo camino que la ingesta (el eco de
+    // messages.upsert deduplica por PK y no vuelve a mover el chat).
+    registrarMensajePropio({ jid, id, ts, type: "text", text, rawJson: result ? JSON.stringify(result) : null });
 
     ensureAuditTable();
     db.prepare(
@@ -222,15 +228,16 @@ export interface SendMediaInput {
  * un tope de tamaño — un archivo desmedido no debe poder colarse por aquí
  * cuando por el compositor de texto está limitado a 4096 caracteres.
  */
-export async function sendMedia(jid: string, input: SendMediaInput, actor: string | null): Promise<SendResult> {
+export async function sendMedia(jidPedido: string, input: SendMediaInput, actor: string | null): Promise<SendResult> {
   if (input.buffer.byteLength === 0) return { ok: false, error: "El archivo está vacío.", code: "invalid" };
   if (input.buffer.byteLength > MEDIA_MAX_BYTES) {
     return { ok: false, error: `El archivo pesa más de ${Math.round(MEDIA_MAX_BYTES / 1024 / 1024)} MB.`, code: "too-big" };
   }
   // Los ADJUNTOS siguen exigiendo chat existente: estrenar conversacion con
   // un archivo es peor que con un texto, y nadie lo ha pedido.
-  const known = await requireOnlineChat(jid, false);
+  const known = await requireOnlineChat(jidPedido, false);
   if (!known.ok) return known;
+  const jid = known.jid;
   const rate = checkRate();
   if (!rate.ok) return { ok: false, error: rate.error, code: "rate" };
 
@@ -245,7 +252,8 @@ export async function sendMedia(jid: string, input: SendMediaInput, actor: strin
           : { document: input.buffer, mimetype: input.mimetype, fileName: input.fileName ?? "archivo", caption };
     const result = await known.sock.sendMessage(jid, payload);
     markSent();
-    const ts = Math.floor(Date.now() / 1000);
+    const now = Math.floor(Date.now() / 1000);
+    const ts = tsOf(result?.messageTimestamp, now);
     const id = result?.key?.id ?? `sent-${ts}-${Math.random().toString(36).slice(2)}`;
     // Conversación estrenada: sin la fila de `chats` el mensaje queda huérfano
     // y el teléfono flotante no la enseñaría.
@@ -256,18 +264,13 @@ export async function sendMedia(jid: string, input: SendMediaInput, actor: strin
     // cuota LRU que la media entrante.
     const file = saveMediaBuffer(jid, id, input.mimetype, input.buffer, input.fileName);
     const text = input.kind === "document" ? (input.fileName ?? caption ?? null) : caption ?? null;
-    const previewIcon = input.kind === "image" ? "📷 Foto" : input.ptt ? "🎤 Nota de voz" : input.kind === "audio" ? "🎤 Audio" : "📄 Documento";
 
-    db.prepare(
-      `INSERT INTO messages(chat_jid, id, from_me, ts, type, text, media_path, media_mime, raw_json)
-       VALUES (?, ?, 1, ?, ?, ?, ?, ?, NULL)
-       ON CONFLICT(chat_jid, id) DO NOTHING`
-    ).run(jid, id, ts, input.kind, text, file, input.mimetype);
-    db.prepare(
-      `UPDATE chats SET last_message_at = MAX(COALESCE(last_message_at, 0), ?),
-                        last_message_preview = ?, updated_at = ?
-       WHERE jid = ?`
-    ).run(ts, previewIcon, ts, jid);
+    registrarMensajePropio({
+      jid, id, ts, type: input.kind, text, mediaPath: file, mediaMime: input.mimetype,
+      rawJson: result ? JSON.stringify(result) : null,
+    });
+    // Una nota de voz se anuncia como tal en la lista (la ingesta no distingue ptt).
+    if (input.ptt) db.prepare("UPDATE chats SET last_message_preview = '🎤 Nota de voz' WHERE jid = ? AND last_message_at = ?").run(jid, ts);
 
     ensureAuditTable();
     db.prepare(

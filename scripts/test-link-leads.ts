@@ -34,7 +34,7 @@ function esperar(caso: string, real: unknown, esperado: unknown): void {
 function nuevaDb(chats: { jid: string; phone: string | null; display_name: string | null }[]) {
   const db = new Database(":memory:");
   db.exec(`
-    CREATE TABLE chats (jid TEXT PRIMARY KEY, phone TEXT, display_name TEXT);
+    CREATE TABLE chats (jid TEXT PRIMARY KEY, phone TEXT, display_name TEXT, alias_of TEXT);
     CREATE TABLE lead_directory (source_row INTEGER PRIMARY KEY, phone TEXT, name TEXT, estado TEXT, synced_at INTEGER);
     CREATE TABLE chat_lead_links (
       id INTEGER PRIMARY KEY, chat_jid TEXT NOT NULL, source_row INTEGER NOT NULL,

@@ -17,7 +17,24 @@ let db: Database.Database | null = null;
 
 export function openDb(): Database.Database {
   if (db) return db;
-  db = new Database(config.dbPath);
+  return openDbAt(config.dbPath);
+}
+
+/**
+ * Abre (o sustituye) la BD en una ruta concreta. Sirve para las PRUEBAS, que
+ * trabajan sobre `":memory:"` con el esquema real y las mismas migraciones que
+ * producción, sin tocar `config.dbPath`. En producción solo se llama desde
+ * `openDb()`.
+ */
+export function openDbAt(ruta: string): Database.Database {
+  if (db) {
+    try {
+      db.close();
+    } catch {
+      /* ya cerrada */
+    }
+  }
+  db = new Database(ruta);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   migrate(db);
@@ -47,6 +64,17 @@ function migrate(d: Database.Database): void {
   // Marca de agua del estado de lectura REAL de WhatsApp (ver src/wa/readState.ts):
   // todo entrante con ts <= wa_read_at ya está leído en el móvil/WhatsApp Web.
   ensureColumn(d, "chats", "wa_read_at", "INTEGER");
+  /**
+   * IDENTIDAD (2026-09-11, ver src/wa/canonico.ts): una fila de chat por
+   * PERSONA. Cuando un chat `@lid` resulta ser la misma persona que un chat con
+   * teléfono, su historial se funde en el canónico y la fila del `@lid` queda
+   * como ALIAS (`alias_of` = jid canónico, `ignored = 1`, sin `last_message_at`).
+   * Se conserva la fila para que cualquier referencia antigua (enlaces, eventos
+   * de WhatsApp que sigan llegando con ese jid) se pueda redirigir.
+   */
+  ensureColumn(d, "chats", "alias_of", "TEXT");
+  /** Remitente dentro de un GRUPO (jid del participante). NULL en chats 1-a-1. */
+  ensureColumn(d, "messages", "participant", "TEXT");
 
   // Tablas añadidas post-v1 (etiquetas de WhatsApp): crear SIEMPRE, idempotente.
   // El schema.sql solo se aplica a BDs nuevas (current < 1); las existentes
@@ -70,7 +98,7 @@ function migrate(d: Database.Database): void {
     -- messages.raw_json). Aquí se materializa esa correspondencia para poder
     -- casar esos chats con el CRM por teléfono.
     --   pn    = JID completo con número ('34600111222@s.whatsapp.net')
-    --   phone = móvil ES canónico de 9 dígitos, o NULL si no es español
+    --   phone = clave de cruce: móvil ES de 9 dígitos, o E.164 sin '+' si es de fuera
     CREATE TABLE IF NOT EXISTS wa_lid_map (
       lid TEXT PRIMARY KEY,
       pn TEXT NOT NULL,
@@ -79,6 +107,22 @@ function migrate(d: Database.Database): void {
       created_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_wa_lid_map_phone ON wa_lid_map(phone);
+    CREATE INDEX IF NOT EXISTS idx_wa_lid_map_pn ON wa_lid_map(pn);
+    CREATE INDEX IF NOT EXISTS idx_chats_alias ON chats(alias_of);
+    -- Agenda de WhatsApp tal como la sincroniza el móvil (contacts.upsert /
+    -- contacts.update / history sync). 'name' = nombre guardado en la agenda,
+    -- 'notify' = nombre que la persona se puso (pushName), 'verified_name' = el
+    -- de negocio verificado. Sirve para el nombre mostrado (agenda > negocio >
+    -- pushName > número, como WhatsApp Web) y para nombrar a quien habla en un
+    -- grupo. Se guarda por jid tal cual llega (pn o lid).
+    CREATE TABLE IF NOT EXISTS wa_contacts (
+      jid TEXT PRIMARY KEY,
+      name TEXT,
+      notify TEXT,
+      verified_name TEXT,
+      lid TEXT,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
   d.prepare(
@@ -118,16 +162,16 @@ function countOne(sql: string): number {
   return row.n;
 }
 
-/** Contadores para WaStatus.counts. */
+/** Contadores para WaStatus.counts. Las filas ALIAS (fundidas) no cuentan como chat. */
 export function statusCounts(): { chats: number; messages: number; linked: number; unknown: number } {
   return {
-    chats: countOne("SELECT COUNT(*) AS n FROM chats"),
+    chats: countOne("SELECT COUNT(*) AS n FROM chats WHERE alias_of IS NULL"),
     messages: countOne("SELECT COUNT(*) AS n FROM messages"),
     linked: countOne(
       "SELECT COUNT(DISTINCT chat_jid) AS n FROM chat_lead_links WHERE status = 'active'"
     ),
     unknown: countOne(
-      "SELECT COUNT(*) AS n FROM chats c WHERE c.ignored = 0 AND NOT EXISTS (" +
+      "SELECT COUNT(*) AS n FROM chats c WHERE c.ignored = 0 AND c.alias_of IS NULL AND NOT EXISTS (" +
         "SELECT 1 FROM chat_lead_links l WHERE l.chat_jid = c.jid AND l.status = 'active')"
     ),
   };

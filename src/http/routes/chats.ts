@@ -11,8 +11,19 @@
 import type { FastifyInstance } from "fastify";
 import { getDb } from "../../db/db";
 import { marcasDeChat } from "../../campanas/marcas";
+import { canonicoDe } from "../../wa/canonico";
 import { emitSse } from "../sse";
 import type { ChatSummary, WaMessage } from "../../shared/whatsapp-contracts";
+
+/**
+ * Jid de una ruta `/chats/:jid/...` → jid CANÓNICO. Un enlace guardado con el
+ * `@lid` de una persona cuyo chat se ha fundido en el del teléfono sigue
+ * funcionando: se redirige a la fila que tiene la conversación.
+ */
+export function jidDeRuta(param: unknown): string {
+  const crudo = String(param ?? "");
+  return canonicoDe(crudo) || crudo;
+}
 
 interface ChatRow {
   jid: string;
@@ -150,8 +161,10 @@ export function registerChatRoutes(app: FastifyInstance): void {
      *  - el teléfono real detrás de un `@lid` (`wa_lid_map`), para los que
      *    todavía no se han volcado a `chats.phone`.
      */
+    // `alias_of IS NULL`: las filas @lid ya fundidas en el chat del teléfono no
+    // son conversaciones, son redirecciones (ver src/db/fusion.ts).
     const where = search
-      ? `WHERE c.ignored = 0 AND (
+      ? `WHERE c.ignored = 0 AND c.alias_of IS NULL AND (
              c.display_name LIKE @like
           OR c.phone LIKE @like
           OR EXISTS (SELECT 1 FROM wa_lid_map lm
@@ -164,7 +177,7 @@ export function registerChatRoutes(app: FastifyInstance): void {
                           OR ld.name LIKE @like
                           OR ld.phone LIKE @like))
         )`
-      : "WHERE c.ignored = 0";
+      : "WHERE c.ignored = 0 AND c.alias_of IS NULL";
     const rows = db
       .prepare(
         `SELECT c.jid,
@@ -203,7 +216,9 @@ export function registerChatRoutes(app: FastifyInstance): void {
                                       ORDER BY c2.updated_at DESC, c2.source_row DESC LIMIT 1)
          LEFT JOIN lead_directory ld ON ld.source_row = cll.source_row
          ${where}
-         ORDER BY c.last_message_at DESC
+         -- Desempate fijo por jid: dos chats con el mismo segundo no deben
+         -- cambiar de orden entre una página y la siguiente.
+         ORDER BY c.last_message_at DESC, c.jid ASC
          LIMIT @limit OFFSET @offset`
       )
       .all({ like: `%${search}%`, limit, offset }) as ChatRow[];
@@ -282,15 +297,15 @@ export function registerChatRoutes(app: FastifyInstance): void {
                                         WHERE c2.chat_jid = c.jid AND c2.status = 'active'
                                         ORDER BY c2.updated_at DESC, c2.source_row DESC LIMIT 1)
            LEFT JOIN lead_directory ld ON ld.source_row = cll.source_row
-          WHERE c.ignored = 0
-          ORDER BY c.last_message_at DESC`
+          WHERE c.ignored = 0 AND c.alias_of IS NULL
+          ORDER BY c.last_message_at DESC, c.jid ASC`
       )
       .all() as Array<{ jid: string; phone: string | null; lastMessageAt: number | null; sourceRow: number | null }>;
     return { chats: filas, total: filas.length };
   });
 
   app.get("/chats/:jid/messages", async (request) => {
-    const { jid } = request.params as { jid: string };
+    const jid = jidDeRuta((request.params as { jid: string }).jid);
     const q = request.query as { beforeTs?: string; limit?: string };
     const limit = Math.min(Number(q.limit) || 50, 200);
     const beforeTs = Number(q.beforeTs) || Number.MAX_SAFE_INTEGER;
@@ -341,7 +356,7 @@ export function registerChatRoutes(app: FastifyInstance): void {
   });
 
   app.post("/chats/:jid/opened", async (request) => {
-    const { jid } = request.params as { jid: string };
+    const jid = jidDeRuta((request.params as { jid: string }).jid);
     getDb()
       .prepare("UPDATE chats SET last_opened_at = ?, updated_at = ? WHERE jid = ?")
       .run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), jid);
@@ -350,7 +365,7 @@ export function registerChatRoutes(app: FastifyInstance): void {
   });
 
   app.post("/chats/:jid/ignore", async (request, reply) => {
-    const { jid } = request.params as { jid: string };
+    const jid = jidDeRuta((request.params as { jid: string }).jid);
     const body = request.body as { ignored?: unknown } | null;
     if (typeof body?.ignored !== "boolean") {
       return reply.status(400).send({ ok: false, error: 'Requiere body { "ignored": boolean }.' });

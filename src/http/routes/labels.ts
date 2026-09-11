@@ -11,6 +11,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { listLabelCatalog, labelsOfChat, resyncLabels, setChatLabel } from "../../wa/labels";
+import { jidDeRuta } from "./chats";
 
 export function registerLabelRoutes(app: FastifyInstance): void {
   app.get("/labels", async () => ({ ok: true, labels: listLabelCatalog() }));
@@ -24,12 +25,12 @@ export function registerLabelRoutes(app: FastifyInstance): void {
   });
 
   app.get("/chats/:jid/labels", async (req) => {
-    const { jid } = req.params as { jid: string };
+    const jid = jidDeRuta((req.params as { jid: string }).jid);
     return { ok: true, labels: labelsOfChat(jid) };
   });
 
   app.post("/chats/:jid/labels", async (req, reply) => {
-    const { jid } = req.params as { jid: string };
+    const jid = jidDeRuta((req.params as { jid: string }).jid);
     const b = (req.body ?? {}) as { labelId?: unknown; on?: unknown };
     const labelId = String(b.labelId ?? "").trim();
     if (!labelId) return reply.status(400).send({ ok: false, error: "Falta labelId.", code: "invalid" });

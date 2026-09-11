@@ -169,5 +169,22 @@ const chat = (jid: string) =>
   })(), AHORA - 5);
 }
 
+/* ---------- 8. Ticks del histórico: estado desde raw_json (una pasada) ---------- */
+{
+  const { rellenarEstadosDesdeRaw } = await import("../src/db/fusion");
+  const PN4 = "34666777888@s.whatsapp.net";
+  db.prepare("INSERT INTO chats (jid, created_at, updated_at) VALUES (?, 1, 1)").run(PN4);
+  const ins = db.prepare("INSERT INTO messages (chat_jid, id, from_me, ts, type, text, raw_json, status) VALUES (?,?,?,?,?,?,?,?)");
+  ins.run(PN4, "H1", 1, 10, "text", "a", '{"status":"READ"}', null);
+  ins.run(PN4, "H2", 1, 11, "text", "b", '{"status":3}', null);
+  ins.run(PN4, "H3", 1, 12, "text", "c", null, null);
+  ins.run(PN4, "H4", 0, 13, "text", "d", '{"status":"READ"}', null);
+  ins.run(PN4, "H5", 1, 14, "text", "e", '{"status":2}', 4);
+  const n = rellenarEstadosDesdeRaw(db);
+  const st = (id: string) => (db.prepare("SELECT status FROM messages WHERE chat_jid = ? AND id = ?").get(PN4, id) as { status: number | null }).status;
+  eq("histórico: nombre → 4, número → 3, sin raw → null, entrante intacto, ya puesto intacto", [n, st("H1"), st("H2"), st("H3"), st("H4"), st("H5")], [2, 4, 3, null, null, 4]);
+  eq("segunda pasada no toca nada", rellenarEstadosDesdeRaw(db), 0);
+}
+
 console.log(`paridad: ${ok} OK, ${ko} fallos`);
 if (ko) process.exit(1);

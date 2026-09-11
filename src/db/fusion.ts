@@ -326,5 +326,27 @@ export async function fusionInicial(opts: {
     setMeta("recalculo_ultimo_mensaje_v1", String(ahora()));
     console.log(`[fusion] orden recalculado desde los mensajes: ${res.recalculados} chats corregidos`);
   }
+  // Ticks del histórico: el estado de entrega viajaba en raw_json y nunca se
+  // había volcado a una columna. Una sola pasada (5.400 mensajes propios en prod).
+  if (opts.aplicar && !getMeta("estados_desde_raw_v1")) {
+    const n = rellenarEstadosDesdeRaw(db);
+    setMeta("estados_desde_raw_v1", String(ahora()));
+    console.log(`[fusion] estado de entrega recuperado de raw_json en ${n} mensajes propios`);
+  }
   return res;
+}
+
+/** `messages.status` a partir del `status` del proto guardado en raw_json (número o nombre). */
+export function rellenarEstadosDesdeRaw(db: Database.Database = getDb()): number {
+  return db
+    .prepare(
+      `UPDATE messages SET status = CASE json_extract(raw_json, '$.status')
+         WHEN 'ERROR' THEN 0 WHEN 'PENDING' THEN 1 WHEN 'SERVER_ACK' THEN 2
+         WHEN 'DELIVERY_ACK' THEN 3 WHEN 'READ' THEN 4 WHEN 'PLAYED' THEN 5
+         WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 3 THEN 3 WHEN 4 THEN 4 WHEN 5 THEN 5
+         ELSE NULL END
+       WHERE from_me = 1 AND status IS NULL AND raw_json IS NOT NULL
+         AND json_extract(raw_json, '$.status') IS NOT NULL`
+    )
+    .run().changes;
 }

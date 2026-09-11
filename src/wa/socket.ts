@@ -269,6 +269,16 @@ export async function startWhatsapp(): Promise<void> {
       // mensajes 1-a-1 con direccionamiento nuevo @lid. El filtrado fino (qué se
       // GUARDA) vive en ingestCore.ts (isStorableChatJid), no aquí.
       shouldIgnoreJid: (jid: string) => isNewsletterJid(jid),
+      /**
+       * ⚠️ CAUSA RAÍZ del historial que nunca llegaba (11-09-2026): en baileys
+       * 6.7.23, si no se pasa esta función, `lib/Socket/index.js` la deduce como
+       * `() => !!syncFullHistory`. Con `syncFullHistory` a false (obligado por el
+       * 428 de arriba) Baileys DESCARTABA todos los avisos de historial del móvil
+       * («History sync is disabled by config») y `messaging-history.set` no se
+       * emitió jamás en esta base. Se procesan todos: reciente, inicial, a
+       * demanda y nombres; el volcado completo no llega porque no se pide.
+       */
+      shouldSyncHistoryMessage: () => true,
       browser: Browsers.windows("Dashboard CSA"),
       generateHighQualityLinkPreview: false,
     });

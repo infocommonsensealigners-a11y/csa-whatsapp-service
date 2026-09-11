@@ -23,14 +23,19 @@ import { encolarSalientePorSiEsManual } from "../campanas/manual";
 import { aprenderMapeo, canonicoDe } from "./canonico";
 import { esGrupo } from "./identidad";
 import {
+  aplicarBorradosParaMi,
   aplicarContenidoTardio,
-  aplicarLecturaDeChats,
+  aplicarEstadoDeChats,
+  aplicarEstadoMensajes,
+  aplicarGrupos,
+  aplicarReacciones,
   applyContactNames,
+  borrarChats,
   ingestChatShells,
   ingestMessages,
   type IngestResult,
 } from "./ingestCore";
-import { onWaEvent, downloadMedia } from "./socket";
+import { onWaEvent, downloadMedia, metadatosDeGrupo } from "./socket";
 import { analyzeChat } from "../brain/analyzeChat";
 import { saveMediaBuffer } from "./mediaStore";
 
@@ -58,6 +63,22 @@ async function downloadAndAttachMedia(candidates: IngestResult["mediaCandidates"
     }
   }
   return listos;
+}
+
+/* ------------------------ asunto de un grupo nuevo ------------------------ */
+// Un grupo del que solo tenemos mensajes (sin `groups.upsert` ni history sync)
+// se enseñaría como «Grupo». Se pide su asunto UNA vez por proceso.
+const asuntosPedidos = new Set<string>();
+
+async function asegurarAsuntoDeGrupo(jid: string): Promise<void> {
+  if (asuntosPedidos.has(jid)) return;
+  const fila = getDb().prepare("SELECT display_name FROM chats WHERE jid = ?").get(jid) as { display_name: string | null } | undefined;
+  if (fila?.display_name?.trim()) return;
+  asuntosPedidos.add(jid);
+  const meta = await metadatosDeGrupo(jid);
+  if (meta) {
+    for (const j of aplicarGrupos([meta])) emitSse({ type: "chat.updated", jid: j });
+  }
 }
 
 /* ------------- Fransua EN DIRECTO: re-análisis al llegar mensaje ------------- */
@@ -174,7 +195,11 @@ export function registerIngest(): void {
         `[ingest] upsert type=${type} recibidos=${messages.length} guardados=${result.touched.size}` +
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")
       );
-      for (const jid of result.touched) emitSse({ type: "message.new", jid });
+      for (const jid of result.touched) {
+        emitSse({ type: "message.new", jid });
+        // Un grupo del que aún no sabemos ni el asunto: se pide una vez.
+        if (esGrupo(jid)) void asegurarAsuntoDeGrupo(jid);
+      }
       // Fransua EN DIRECTO: solo mensajes nuevos y recientes, no el backfill.
       for (const jid of result.vivos) scheduleLiveAnalyze(jid);
       // Descarga fuera de la ruta síncrona (I/O de red): cuando termine cada
@@ -190,34 +215,103 @@ export function registerIngest(): void {
     }
   });
 
-  // CONTENIDO QUE LLEGA TARDE: ediciones de mensaje y cuerpos que WhatsApp
-  // entrega después del upsert original viajan por `messages.update` con
-  // `update.message`. Se guardan en el chat canónico y se avisa a la UI.
+  // `messages.update` trae tres cosas distintas: CONTENIDO TARDÍO (ediciones y
+  // cuerpos que WhatsApp entrega después del upsert original), ESTADO de
+  // entrega (los ticks) y BORRADOS PARA TODOS. Todo va al chat canónico.
   onWaEvent("messages.update", (updates) => {
     try {
-      const touched = aplicarContenidoTardio(updates as Array<{ key: WAMessage["key"]; update: Partial<WAMessage> }>);
-      for (const jid of touched) emitSse({ type: "message.new", jid });
+      const lista = updates as Array<{ key: WAMessage["key"]; update: Partial<WAMessage> }>;
+      for (const jid of aplicarContenidoTardio(lista)) emitSse({ type: "message.new", jid });
+      for (const jid of aplicarEstadoMensajes(lista)) emitSse({ type: "message.updated", jid });
     } catch (err) {
       console.error("[ingest] error procesando messages.update:", (err as Error).message);
+    }
+  });
+
+  // «Eliminar para mí» / «vaciar chat» desde el móvil.
+  onWaEvent("messages.delete", (evt) => {
+    try {
+      for (const jid of aplicarBorradosParaMi(evt)) emitSse({ type: "message.updated", jid });
+    } catch (err) {
+      console.error("[ingest] messages.delete:", (err as Error).message);
+    }
+  });
+
+  // Reacciones (añadir, cambiar, quitar), de cualquiera de los dos lados.
+  onWaEvent("messages.reaction", (lista) => {
+    try {
+      for (const jid of aplicarReacciones(lista)) emitSse({ type: "message.updated", jid });
+    } catch (err) {
+      console.error("[ingest] messages.reaction:", (err as Error).message);
     }
   });
 
   onWaEvent("contacts.upsert", (contacts) => applyContactNames(contacts, false));
   onWaEvent("contacts.update", (contacts) => applyContactNames(contacts as Array<Partial<Contact>>, true));
 
-  // ESTADO DE LECTURA REAL (petición del usuario 2026-08-01). WhatsApp sincroniza
-  // su `unreadCount` entre dispositivos: cuando Fran abre un chat en el móvil o
-  // en WhatsApp Web, llega aquí un `chats.update` con unreadCount 0. Lo
-  // traducimos a la marca de agua `wa_read_at` (ver src/wa/readState.ts).
-  const aplicarLectura = (updates: Array<{ id?: string | null; unreadCount?: number | null }>) => {
+  // ESTADO DEL CHAT que sincroniza el móvil: leído (`unreadCount` → marca de
+  // agua `wa_read_at`, ver src/wa/readState.ts), archivado, fijado, silenciado y
+  // el asunto de los grupos. Como en WhatsApp Web: lo que Fran hace en el móvil
+  // se ve aquí al instante.
+  onWaEvent("chats.update", (updates) => {
     try {
-      for (const jid of aplicarLecturaDeChats(updates)) emitSse({ type: "chat.updated", jid });
+      for (const jid of aplicarEstadoDeChats(updates as Array<Partial<Chat>>, false)) emitSse({ type: "chat.updated", jid });
     } catch (err) {
-      console.error("[ingest] estado de lectura:", (err as Error).message);
+      console.error("[ingest] chats.update:", (err as Error).message);
     }
-  };
-  onWaEvent("chats.update", (updates) => aplicarLectura(updates as Array<Partial<Chat>>));
-  onWaEvent("chats.upsert", (chats) => aplicarLectura(chats as Array<Partial<Chat>>));
+  });
+  onWaEvent("chats.upsert", (chats) => {
+    try {
+      const tocados = aplicarEstadoDeChats(chats as Array<Partial<Chat>>, true);
+      if (tocados.length) emitSse({ type: "chats.synced" });
+    } catch (err) {
+      console.error("[ingest] chats.upsert:", (err as Error).message);
+    }
+  });
+  onWaEvent("chats.delete", (jids) => {
+    try {
+      if (borrarChats(jids).length) emitSse({ type: "chats.synced" });
+    } catch (err) {
+      console.error("[ingest] chats.delete:", (err as Error).message);
+    }
+  });
+
+  // GRUPOS: asunto y participantes.
+  onWaEvent("groups.upsert", (grupos) => {
+    try {
+      for (const jid of aplicarGrupos(grupos)) emitSse({ type: "chat.updated", jid });
+    } catch (err) {
+      console.error("[ingest] groups.upsert:", (err as Error).message);
+    }
+  });
+  onWaEvent("groups.update", (grupos) => {
+    try {
+      for (const jid of aplicarGrupos(grupos)) emitSse({ type: "chat.updated", jid });
+    } catch (err) {
+      console.error("[ingest] groups.update:", (err as Error).message);
+    }
+  });
+
+  // PRESENCIA («en línea», «escribiendo…», «grabando audio…») del chat que el
+  // dashboard tiene abierto (se suscribe con POST /chats/:jid/presence).
+  onWaEvent("presence.update", ({ id, presences }) => {
+    try {
+      const jid = canonicoDe(id) || id;
+      for (const [participante, p] of Object.entries(presences ?? {})) {
+        const state = p?.lastKnownPresence;
+        if (!state) continue;
+        emitSse({
+          type: "presence",
+          jid,
+          participant: esGrupo(jid) ? canonicoDe(participante) || participante : null,
+          state,
+          lastSeen: typeof p.lastSeen === "number" ? p.lastSeen : null,
+        });
+      }
+    } catch (err) {
+      console.error("[ingest] presence.update:", (err as Error).message);
+    }
+  });
 
   // El contacto ha compartido su número: WhatsApp nos dice qué teléfono hay
   // detrás de un @lid. Si tenía chat propio, se funde en el del teléfono.

@@ -2,9 +2,10 @@
  * NÚCLEO DE LA INGESTA — mensaje/chat/contacto de Baileys → filas de SQLite.
  *
  * Sin socket, sin red, sin IA: solo la base y la capa de identidad. Así se
- * puede probar con una BD en memoria (scripts/test-ingest.ts) exactamente el
- * mismo código que corre en producción. El cableado a los eventos de Baileys,
- * la descarga de media, las campañas y el re-análisis viven en `ingest.ts`.
+ * puede probar con una BD en memoria (scripts/test-fusion.ts, test-paridad.ts)
+ * exactamente el mismo código que corre en producción. El cableado a los
+ * eventos de Baileys, la descarga de media, las campañas y el re-análisis viven
+ * en `ingest.ts`.
  *
  * Reglas que salen de la auditoría 2026-09-11:
  *  - Cada mensaje se guarda bajo el jid CANÓNICO de la persona (canonico.ts):
@@ -20,8 +21,11 @@
  *  - `append` no es solo historial: es también lo que WhatsApp re-entrega tras
  *    una desconexión. Un mensaje reciente (3 días) que llega por `append` se
  *    trata como en vivo (media, campañas, análisis).
+ *  - Paridad con WhatsApp Web: estado de entrega, borrados, ediciones,
+ *    reacciones, mensajes de sistema (grupos, llamadas perdidas, «esperando el
+ *    mensaje»), archivado/fijado/silenciado del móvil y grupos.
  */
-import type { Chat, Contact, WAMessage } from "baileys";
+import type { Chat, Contact, GroupMetadata, WAMessage } from "baileys";
 import { getDb } from "../db/db";
 import { isStorableChatJid } from "./jidPhone";
 import { aprenderMapeo, canonicoDe } from "./canonico";
@@ -50,16 +54,22 @@ export function noVacio(v: string | null | undefined): string | null {
   return t ? t : null;
 }
 
-/** Desenvuelve wrappers (efímeros, view-once) y clasifica el contenido. */
-export function extractContent(msg: WAMessage): ExtractedContent | null {
-  const m = msg.message;
+/** Desenvuelve wrappers (efímeros, view-once) y devuelve el contenido interior. */
+export function contenidoInterior(m: WAMessage["message"]): NonNullable<WAMessage["message"]> | null {
   if (!m) return null;
-  const inner =
+  return (
     m.ephemeralMessage?.message ??
     m.viewOnceMessage?.message ??
     m.viewOnceMessageV2?.message ??
     m.documentWithCaptionMessage?.message ??
-    m;
+    m
+  );
+}
+
+/** Desenvuelve wrappers (efímeros, view-once) y clasifica el contenido. */
+export function extractContent(msg: WAMessage): ExtractedContent | null {
+  const inner = contenidoInterior(msg.message);
+  if (!inner) return null;
 
   if (inner.conversation) return { type: "text", text: inner.conversation };
   if (inner.extendedTextMessage?.text) return { type: "text", text: inner.extendedTextMessage.text };
@@ -114,6 +124,49 @@ export function tsOf(v: unknown, fallback: number): number {
   return fallback;
 }
 
+/* ------------------------ estado de entrega (ticks) ------------------------ */
+
+/** WebMessageInfo.Status: 0 error · 1 pendiente · 2 enviado · 3 entregado · 4 leído · 5 reproducido. */
+const ESTADOS: Record<string, number> = { ERROR: 0, PENDING: 1, SERVER_ACK: 2, DELIVERY_ACK: 3, READ: 4, PLAYED: 5 };
+
+export function estadoDe(v: unknown): number | null {
+  if (typeof v === "number" && v >= 0 && v <= 5) return v;
+  if (typeof v === "string" && v in ESTADOS) return ESTADOS[v];
+  return null;
+}
+
+/* ------------------------ mensajes de sistema (stubs) ------------------------ */
+
+/** WebMessageInfo.StubType → nombre. Solo los que WhatsApp Web enseña como línea de sistema. */
+const STUBS: Record<number, string> = {
+  1: "REVOKE",
+  2: "CIPHERTEXT",
+  20: "GROUP_CREATE",
+  21: "GROUP_CHANGE_SUBJECT",
+  22: "GROUP_CHANGE_ICON",
+  24: "GROUP_CHANGE_DESCRIPTION",
+  27: "GROUP_PARTICIPANT_ADD",
+  28: "GROUP_PARTICIPANT_REMOVE",
+  29: "GROUP_PARTICIPANT_PROMOTE",
+  30: "GROUP_PARTICIPANT_DEMOTE",
+  31: "GROUP_PARTICIPANT_INVITE",
+  32: "GROUP_PARTICIPANT_LEAVE",
+  40: "CALL_MISSED_VOICE",
+  41: "CALL_MISSED_VIDEO",
+  43: "GROUP_DELETE",
+  45: "CALL_MISSED_GROUP_VOICE",
+  46: "CALL_MISSED_GROUP_VIDEO",
+};
+const NOMBRES_STUB = new Set(Object.values(STUBS));
+
+export function stubDe(msg: WAMessage): { stub: string; params: string[] } | null {
+  const raw = (msg as { messageStubType?: unknown }).messageStubType;
+  const nombre = typeof raw === "number" ? STUBS[raw] : typeof raw === "string" && NOMBRES_STUB.has(raw) ? raw : undefined;
+  if (!nombre) return null;
+  const params = Array.isArray(msg.messageStubParameters) ? msg.messageStubParameters.map(String) : [];
+  return { stub: nombre, params };
+}
+
 export type ModoIngesta = "notify" | "append" | "history";
 
 /** Un mensaje que entra por `append` con menos de esta antigüedad se trata como en vivo. */
@@ -134,15 +187,21 @@ function statements() {
          updated_at = excluded.updated_at`
     ),
     insertMessage: db.prepare(
-      `INSERT INTO messages(chat_jid, id, from_me, ts, type, text, media_path, media_mime, raw_json, participant)
-       VALUES (@chat_jid, @id, @from_me, @ts, @type, @text, @media_path, @media_mime, @raw_json, @participant)
+      `INSERT INTO messages(chat_jid, id, from_me, ts, type, text, media_path, media_mime, raw_json, participant, status, stub)
+       VALUES (@chat_jid, @id, @from_me, @ts, @type, @text, @media_path, @media_mime, @raw_json, @participant, @status, @stub)
        ON CONFLICT(chat_jid, id) DO NOTHING`
     ),
-    /** Solo tras INSERTAR: el orden de la lista es el de los mensajes reales. */
+    /** Un «esperando el mensaje…» (CIPHERTEXT) que por fin llega descifrado: se rellena en su sitio. */
+    upgradeCiphertext: db.prepare(
+      `UPDATE messages SET type = @type, text = @text, raw_json = @raw_json, stub = NULL, status = COALESCE(@status, status)
+        WHERE chat_jid = @chat_jid AND id = @id AND stub = 'CIPHERTEXT'`
+    ),
+    /** Solo tras INSERTAR: el orden de la lista es el de los mensajes reales. Un chat borrado en el móvil renace. */
     bumpChat: db.prepare(
       `UPDATE chats SET
          last_message_preview = CASE WHEN @ts >= COALESCE(last_message_at, 0) THEN @preview ELSE last_message_preview END,
          last_message_at = MAX(COALESCE(last_message_at, 0), @ts),
+         deleted_at = NULL,
          updated_at = @now
        WHERE jid = @jid`
     ),
@@ -176,7 +235,7 @@ export interface IngestResult {
   mediaCandidates: Array<{ jid: string; id: string; msg: WAMessage; mimetype: string | null; fileName: string | null }>;
   /** Texto entrante nuevo y en vivo, de una persona (no grupos): para las campañas. */
   entrantes: Array<{ telefono: string; texto: string; jid: string; waMsgId: string }>;
-  /** Salientes nuevos (no historial): candidatos a toma manual. */
+  /** Salientes nuevos (no historial, no grupos): candidatos a toma manual. */
   salientes: Array<{ jid: string; waMsgId: string; ts: number }>;
 }
 
@@ -213,14 +272,16 @@ export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta;
       const jidCrudo = normalizarJid(key?.remoteJid);
       if (!jidCrudo || !isStorableChatJid(jidCrudo) || msg.broadcast) continue;
       const content = extractContent(msg);
-      if (!content) continue;
+      const stub = content ? null : stubDe(msg);
+      if (!content && !stub) continue;
 
       const jid = canonicoDe(jidCrudo);
       const fromMe = !!key?.fromMe;
       const ts = tsOf(msg.messageTimestamp, now);
       const id = key?.id ?? `${ts}-${Math.random().toString(36).slice(2)}`;
       const grupo = esGrupo(jid);
-      const participant = grupo ? canonicoDe(key?.participant) || null : null;
+      const participant = grupo ? canonicoDe(key?.participant ?? (msg as { participant?: string }).participant) || null : null;
+      const status = fromMe ? estadoDe((msg as { status?: unknown }).status) : null;
       out.seen.add(jid);
 
       stmts.ensureChat.run({
@@ -231,22 +292,30 @@ export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta;
         display_name: !fromMe && !grupo ? (msg.pushName ?? "") : "",
         now,
       });
-      const inserted = stmts.insertMessage.run({
-        chat_jid: jid,
-        id,
-        from_me: fromMe ? 1 : 0,
-        ts,
-        type: content.type,
-        text: content.text,
-        media_path: null,
-        media_mime: null,
-        raw_json: JSON.stringify(msg),
-        participant,
-      });
-      if (inserted.changes === 0) continue;
+      // En un grupo, el nombre de quien habla se guarda en la agenda por su jid.
+      if (grupo && participant && !fromMe && noVacio(msg.pushName)) {
+        stmts.upsertContact.run({ jid: participant, name: null, notify: noVacio(msg.pushName), verified: null, lid: null, now });
+      }
 
-      stmts.bumpChat.run({ jid, ts, preview: previewDe(content.type, content.text), now });
+      const tipo: MsgType = content ? content.type : "other";
+      const texto = content ? content.text : null;
+      const raw = JSON.stringify(msg);
+      const inserted = stmts.insertMessage.run({
+        chat_jid: jid, id, from_me: fromMe ? 1 : 0, ts, type: tipo, text: texto,
+        media_path: null, media_mime: null, raw_json: raw, participant, status, stub: stub?.stub ?? null,
+      });
+      if (inserted.changes === 0) {
+        // Ya estaba: si era un «esperando el mensaje…» y ahora llega el contenido, se rellena.
+        if (content && stmts.upgradeCiphertext.run({ type: tipo, text: texto, raw_json: raw, status, chat_jid: jid, id }).changes > 0) {
+          out.touched.add(jid);
+        }
+        continue;
+      }
+
+      const preview = stub ? previewDeStub(stub.stub) : previewDe(tipo, texto);
+      stmts.bumpChat.run({ jid, ts, preview, now });
       out.touched.add(jid);
+      if (!content) continue; // un mensaje de sistema no es media, ni campaña, ni toma manual
       const vivo = opts.modo === "notify" || (opts.modo === "append" && now - ts <= VENTANA_VIVO_S);
       if (vivo) out.vivos.add(jid);
       if (vivo && content.type !== "text" && content.type !== "other") {
@@ -261,18 +330,26 @@ export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta;
         const tel = telefonoEs(jid) ?? telefonoEs(key?.senderPn);
         if (tel) out.entrantes.push({ telefono: tel, texto: content.text, jid, waMsgId: id });
       }
-      if (opts.modo !== "history" && fromMe) out.salientes.push({ jid, waMsgId: id, ts });
+      if (opts.modo !== "history" && fromMe && !grupo) out.salientes.push({ jid, waMsgId: id, ts });
     }
   });
   run(messages);
   return out;
 }
 
+/** Lo que enseña la lista cuando el último mensaje es de sistema. */
+export function previewDeStub(stub: string): string {
+  if (stub === "CIPHERTEXT") return "Esperando el mensaje…";
+  if (stub === "REVOKE") return "🚫 Se eliminó este mensaje";
+  if (stub.startsWith("CALL_MISSED")) return stub.includes("VIDEO") ? "📹 Videollamada perdida" : "📞 Llamada de voz perdida";
+  return "ℹ️ Cambio en el grupo";
+}
+
 /**
  * Filas de chat a partir del listado del history sync, aunque no traigan
  * mensajes. Aprende `pnJid`/`lidJid` (el par teléfono↔LID que WhatsApp ya sabe),
  * coloca los chats sin mensajes nuestros donde WhatsApp los tiene
- * (`conversationTimestamp`) y aplica el estado de lectura real.
+ * (`conversationTimestamp`) y aplica lectura, archivado, fijado y silencio.
  */
 export function ingestChatShells(chats: Chat[]): number {
   const db = getDb();
@@ -296,18 +373,17 @@ export function ingestChatShells(chats: Chat[]): number {
       if (!jidCrudo || !isStorableChatJid(jidCrudo)) continue;
       const jid = canonicoDe(jidCrudo);
       stmts.ensureChat.run({ jid, phone: telefonoEs(jid), display_name: chat.name ?? "", now });
+      // El nombre del history sync es el título que Fran ve en el móvil: manda.
+      if (noVacio(chat.name)) stmts.updateName.run({ jid, name: chat.name, now, overwrite: 1 });
       const ts = tsOf(chat.conversationTimestamp, 0);
       if (ts > 0) posicion.run({ jid, ts, now });
       n++;
     }
   });
   run(chats);
-  // El estado de lectura se aplica FUERA de la transacción de shells: hace sus
-  // propias consultas por chat y no debe alargar el lock de escritura.
-  for (const chat of chats) {
-    const jidCrudo = normalizarJid(chat.id);
-    if (jidCrudo && isStorableChatJid(jidCrudo)) applyWaRead(canonicoDe(jidCrudo), chat.unreadCount);
-  }
+  // El estado se aplica FUERA de la transacción de shells: hace sus propias
+  // consultas por chat y no debe alargar el lock de escritura.
+  aplicarEstadoDeChats(chats as Array<Partial<Chat>>, false);
   return n;
 }
 
@@ -342,6 +418,40 @@ export function applyContactNames(contacts: Array<Partial<Contact>>, overwrite: 
   }
 }
 
+/** Asunto y participantes de grupos (`groups.upsert`, `groups.update`, `groupMetadata`). */
+export function aplicarGrupos(grupos: Array<Partial<GroupMetadata>>): string[] {
+  const db = getDb();
+  const stmts = statements();
+  const now = Math.floor(Date.now() / 1000);
+  const upsertPart = db.prepare(
+    `INSERT INTO wa_group_participants (group_jid, jid, admin, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(group_jid, jid) DO UPDATE SET admin = excluded.admin, updated_at = excluded.updated_at`
+  );
+  const tocados: string[] = [];
+  for (const g of grupos) {
+    const jid = normalizarJid(g.id);
+    if (!esGrupo(jid)) continue;
+    stmts.ensureChat.run({ jid, phone: null, display_name: g.subject ?? "", now });
+    if (noVacio(g.subject)) stmts.updateName.run({ jid, name: g.subject, now, overwrite: 1 });
+    if (Array.isArray(g.participants) && g.participants.length) {
+      const tx = db.transaction(() => {
+        db.prepare("DELETE FROM wa_group_participants WHERE group_jid = ?").run(jid);
+        for (const p of g.participants ?? []) {
+          const pj = canonicoDe(p.id);
+          if (!pj) continue;
+          upsertPart.run(jid, pj, p.admin ? 1 : 0, now);
+          if (noVacio(p.name) || noVacio(p.notify)) {
+            stmts.upsertContact.run({ jid: pj, name: noVacio(p.name), notify: noVacio(p.notify), verified: null, lid: null, now });
+          }
+        }
+      });
+      tx();
+    }
+    tocados.push(jid);
+  }
+  return tocados;
+}
+
 /**
  * CONTENIDO QUE LLEGA TARDE por `messages.update` (ediciones y cuerpos que
  * WhatsApp entrega después del upsert original). Actualiza el texto si la fila
@@ -355,7 +465,8 @@ export function aplicarContenidoTardio(
   const db = getDb();
   const stmts = statements();
   const updateContent = db.prepare(
-    `UPDATE messages SET type = @type, text = @text, raw_json = @raw_json WHERE chat_jid = @chat_jid AND id = @id`
+    `UPDATE messages SET type = @type, text = @text, raw_json = @raw_json, edited = MAX(edited, @edited), stub = NULL
+      WHERE chat_jid = @chat_jid AND id = @id`
   );
   const touched = new Set<string>();
   for (const u of updates) {
@@ -366,19 +477,23 @@ export function aplicarContenidoTardio(
     // Una EDICIÓN viene envuelta en protocolMessage.editedMessage y apunta al id
     // del mensaje ORIGINAL; el contenido tardío normal viene directo.
     const proto = upd.message.protocolMessage;
+    const esEdicion = !!proto?.editedMessage;
     const body = proto?.editedMessage ?? upd.message;
     const targetId = proto?.key?.id ?? u.key?.id;
     if (!targetId) continue;
     const content = extractContent({ key: u.key, message: body } as WAMessage);
     if (!content) continue;
     const raw = JSON.stringify({ key: u.key, message: body });
-    const updated = updateContent.run({ type: content.type, text: content.text, raw_json: raw, chat_jid: jid, id: targetId });
+    const updated = updateContent.run({
+      type: content.type, text: content.text, raw_json: raw, edited: esEdicion ? 1 : 0, chat_jid: jid, id: targetId,
+    });
     if (updated.changes === 0) {
       const ts = tsOf(upd.messageTimestamp, now);
       stmts.ensureChat.run({ jid, phone: telefonoEs(jid), display_name: "", now });
       const ins = stmts.insertMessage.run({
         chat_jid: jid, id: targetId, from_me: u.key?.fromMe ? 1 : 0, ts,
-        type: content.type, text: content.text, media_path: null, media_mime: null, raw_json: raw, participant: null,
+        type: content.type, text: content.text, media_path: null, media_mime: null, raw_json: raw,
+        participant: null, status: null, stub: null,
       });
       if (ins.changes > 0) stmts.bumpChat.run({ jid, ts, preview: previewDe(content.type, content.text), now });
     } else {
@@ -393,16 +508,137 @@ export function aplicarContenidoTardio(
   return touched;
 }
 
-/** `chats.update` / `chats.upsert`: hoy solo el estado de lectura. Devuelve los chats cuyo contador cambió. */
-export function aplicarLecturaDeChats(updates: Array<{ id?: string | null; unreadCount?: number | null }>): string[] {
+/**
+ * ESTADO de mensajes por `messages.update`: acuses (ticks: enviado → entregado →
+ * leído, nunca hacia atrás) y BORRADO PARA TODOS (`messageStubType: REVOKE`,
+ * `message: null`). Devuelve los chats tocados.
+ */
+export function aplicarEstadoMensajes(
+  updates: Array<{ key: WAMessage["key"]; update: Partial<WAMessage> }>
+): Set<string> {
+  const db = getDb();
+  const estado = db.prepare(
+    "UPDATE messages SET status = @status WHERE chat_jid = @jid AND id = @id AND COALESCE(status, -1) < @status"
+  );
+  const revocar = db.prepare("UPDATE messages SET revoked = 1 WHERE chat_jid = ? AND id = ? AND revoked = 0");
+  const previewRevocado = db.prepare(
+    `UPDATE chats SET last_message_preview = '🚫 Se eliminó este mensaje'
+      WHERE jid = @jid AND last_message_at = (SELECT ts FROM messages WHERE chat_jid = @jid AND id = @id)`
+  );
+  const touched = new Set<string>();
+  for (const u of updates) {
+    const jidCrudo = normalizarJid(u.key?.remoteJid);
+    if (!jidCrudo || !isStorableChatJid(jidCrudo) || !u.key?.id) continue;
+    const jid = canonicoDe(jidCrudo);
+    const upd = u.update as { status?: unknown; messageStubType?: unknown; message?: unknown } | undefined;
+    const st = estadoDe(upd?.status);
+    if (st !== null && estado.run({ status: st, jid, id: u.key.id }).changes > 0) touched.add(jid);
+    const stubName = typeof upd?.messageStubType === "number" ? STUBS[upd.messageStubType] : upd?.messageStubType;
+    if (stubName === "REVOKE" || (upd && "message" in upd && upd.message === null && stubName)) {
+      if (revocar.run(jid, u.key.id).changes > 0) {
+        previewRevocado.run({ jid, id: u.key.id });
+        touched.add(jid);
+      }
+    }
+  }
+  return touched;
+}
+
+/** «Eliminar para mí» / «Vaciar chat» hechos en el móvil (`messages.delete`). Se ocultan, no se borran. */
+export function aplicarBorradosParaMi(evt: { keys: WAMessage["key"][] } | { jid: string; all: true }): Set<string> {
+  const db = getDb();
+  const touched = new Set<string>();
+  if ("all" in evt) {
+    const jid = canonicoDe(evt.jid);
+    if (jid && db.prepare("UPDATE messages SET deleted_for_me = 1 WHERE chat_jid = ? AND deleted_for_me = 0").run(jid).changes > 0) {
+      touched.add(jid);
+    }
+    return touched;
+  }
+  const uno = db.prepare("UPDATE messages SET deleted_for_me = 1 WHERE chat_jid = ? AND id = ? AND deleted_for_me = 0");
+  for (const k of evt.keys ?? []) {
+    const jid = canonicoDe(k?.remoteJid);
+    if (!jid || !k?.id) continue;
+    if (uno.run(jid, k.id).changes > 0) touched.add(jid);
+  }
+  return touched;
+}
+
+/** Reacciones (`messages.reaction`): texto vacío = quitar. Devuelve los chats tocados. */
+export function aplicarReacciones(
+  lista: Array<{ key: WAMessage["key"]; reaction: { text?: string | null; key?: WAMessage["key"] | null; senderTimestampMs?: unknown } }>
+): Set<string> {
+  const db = getDb();
+  const poner = db.prepare(
+    `INSERT INTO wa_reactions (chat_jid, msg_id, sender, emoji, ts) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(chat_jid, msg_id, sender) DO UPDATE SET emoji = excluded.emoji, ts = excluded.ts`
+  );
+  const quitar = db.prepare("DELETE FROM wa_reactions WHERE chat_jid = ? AND msg_id = ? AND sender = ?");
+  const touched = new Set<string>();
+  for (const r of lista) {
+    const jid = canonicoDe(r.key?.remoteJid);
+    const msgId = r.key?.id;
+    if (!jid || !msgId) continue;
+    const rk = r.reaction?.key;
+    const sender = rk?.fromMe ? "me" : canonicoDe(rk?.participant ?? r.key?.participant ?? rk?.remoteJid ?? r.key?.remoteJid) || jid;
+    const emoji = noVacio(r.reaction?.text);
+    const tsMs = tsOf(r.reaction?.senderTimestampMs, 0);
+    if (emoji) poner.run(jid, msgId, sender, emoji, tsMs > 0 ? Math.floor(tsMs / 1000) : null);
+    else quitar.run(jid, msgId, sender);
+    touched.add(jid);
+  }
+  return touched;
+}
+
+/**
+ * `chats.update` / `chats.upsert`: lo que el móvil sincroniza del estado del
+ * chat — leído (`unreadCount`), archivado, fijado, silenciado y el nombre de
+ * los grupos. Devuelve los chats cuyo estado cambió. `crear` = dar de alta la
+ * fila si no existe (solo tiene sentido en `chats.upsert`).
+ */
+export function aplicarEstadoDeChats(
+  updates: Array<Partial<Chat> & { id?: string | null; unreadCount?: number | null }>,
+  crear = false
+): string[] {
+  const db = getDb();
+  const stmts = statements();
+  const now = Math.floor(Date.now() / 1000);
+  const setArch = db.prepare("UPDATE chats SET archived = ?, updated_at = ? WHERE jid = ? AND archived <> ?");
+  const setPin = db.prepare("UPDATE chats SET pinned = ?, updated_at = ? WHERE jid = ? AND COALESCE(pinned, -1) <> COALESCE(?, -1)");
+  const setMute = db.prepare("UPDATE chats SET mute_until = ?, updated_at = ? WHERE jid = ? AND COALESCE(mute_until, -1) <> COALESCE(?, -1)");
   const tocados: string[] = [];
   for (const u of updates) {
     const jidCrudo = normalizarJid(u?.id);
     if (!jidCrudo || !isStorableChatJid(jidCrudo)) continue;
     const jid = canonicoDe(jidCrudo);
-    if (applyWaRead(jid, u.unreadCount)) tocados.push(jid);
+    if (crear) stmts.ensureChat.run({ jid, phone: telefonoEs(jid), display_name: u.name ?? "", now });
+    let cambio = false;
+    if (applyWaRead(jid, u.unreadCount)) cambio = true;
+    if (typeof u.archived === "boolean") cambio = setArch.run(u.archived ? 1 : 0, now, jid, u.archived ? 1 : 0).changes > 0 || cambio;
+    if ("pinned" in u) {
+      const pin = u.pinned ? tsOf(u.pinned, now) : null;
+      cambio = setPin.run(pin, now, jid, pin).changes > 0 || cambio;
+    }
+    if ("muteEndTime" in u) {
+      const hasta = u.muteEndTime ? tsOf(u.muteEndTime, 0) || null : null;
+      cambio = setMute.run(hasta, now, jid, hasta).changes > 0 || cambio;
+    }
+    if (esGrupo(jid) && noVacio(u.name)) cambio = stmts.updateName.run({ jid, name: u.name, now, overwrite: 1 }).changes > 0 || cambio;
+    if (cambio) tocados.push(jid);
   }
   return tocados;
+}
+
+/** Chats borrados en el móvil (`chats.delete`): se ocultan; si llega un mensaje nuevo, renacen. */
+export function borrarChats(jids: string[]): string[] {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+  const out: string[] = [];
+  for (const j of jids) {
+    const jid = canonicoDe(j);
+    if (jid && db.prepare("UPDATE chats SET deleted_at = ?, updated_at = ? WHERE jid = ? AND deleted_at IS NULL").run(now, now, jid).changes > 0) out.push(jid);
+  }
+  return out;
 }
 
 /**
@@ -419,13 +655,15 @@ export function registrarMensajePropio(m: {
   mediaPath?: string | null;
   mediaMime?: string | null;
   rawJson?: string | null;
+  status?: number | null;
 }): boolean {
   const stmts = statements();
   const now = Math.floor(Date.now() / 1000);
   stmts.ensureChat.run({ jid: m.jid, phone: telefonoEs(m.jid), display_name: "", now });
   const ins = stmts.insertMessage.run({
     chat_jid: m.jid, id: m.id, from_me: 1, ts: m.ts, type: m.type, text: m.text,
-    media_path: m.mediaPath ?? null, media_mime: m.mediaMime ?? null, raw_json: m.rawJson ?? null, participant: null,
+    media_path: m.mediaPath ?? null, media_mime: m.mediaMime ?? null, raw_json: m.rawJson ?? null,
+    participant: null, status: m.status ?? 1, stub: null,
   });
   if (ins.changes > 0) stmts.bumpChat.run({ jid: m.jid, ts: m.ts, preview: previewDe(m.type, m.text), now });
   return ins.changes > 0;

@@ -32,6 +32,7 @@ import fs from "node:fs";
 import { config } from "../config";
 import { isGroupJid, isNewsletterJid } from "./jidPhone";
 import type { WaConnectionState } from "../shared/whatsapp-contracts";
+import type { GroupMetadata } from "baileys";
 
 const log = pino({ level: "info", base: undefined });
 // Baileys es muy verboso; solo nos interesan sus warnings/errores.
@@ -166,6 +167,32 @@ export async function requestOlderHistory(
   }
 }
 
+/**
+ * Pide a WhatsApp que nos avise de la PRESENCIA de un contacto («en línea»,
+ * «escribiendo…», «grabando audio…»). Es lo que hace WhatsApp Web al abrir un
+ * chat: una suscripción de lectura, no publica nada nuestro (nuestra propia
+ * presencia sigue sin enviarse nunca, ver markOnlineOnConnect). Nunca lanza.
+ */
+export async function suscribirPresencia(jid: string): Promise<boolean> {
+  if (!sock || state !== "open" || !jid || isGroupJid(jid)) return false;
+  try {
+    await sock.presenceSubscribe(jid);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Metadatos de un grupo (asunto, participantes). Solo lectura; null sin conexión o si falla. */
+export async function metadatosDeGrupo(jid: string): Promise<GroupMetadata | null> {
+  if (!sock || state !== "open" || !isGroupJid(jid)) return null;
+  try {
+    return await sock.groupMetadata(jid);
+  } catch {
+    return null;
+  }
+}
+
 /** Descarga el contenido multimedia de un mensaje (imágenes en Fase 1). */
 export async function downloadMedia(msg: WAMessage): Promise<Buffer> {
   const result = await downloadMediaMessage(
@@ -208,12 +235,13 @@ export async function startWhatsapp(): Promise<void> {
       // igualmente el volcado de historial reciente; si algún día hace falta
       // más profundidad, existe fetchMessageHistory bajo demanda.
       //
-      // Solo ignoramos GRUPOS y NEWSLETTERS a nivel de socket. NO ignoramos
-      // "todo lo que no sea @s.whatsapp.net": eso tiraba el push del history-sync
-      // (que puede enrutarse por el propio JID/broadcast) y los mensajes 1-a-1
-      // con direccionamiento nuevo @lid. El filtrado fino (qué se GUARDA) vive en
-      // ingest.ts (isStorableChatJid), no aquí.
-      shouldIgnoreJid: (jid: string) => isGroupJid(jid) || isNewsletterJid(jid),
+      // Solo ignoramos NEWSLETTERS a nivel de socket. Los GRUPOS entran desde el
+      // 2026-09-11 (decisión del usuario: que se parezca a WhatsApp Web). NO
+      // ignoramos "todo lo que no sea @s.whatsapp.net": eso tiraba el push del
+      // history-sync (que puede enrutarse por el propio JID/broadcast) y los
+      // mensajes 1-a-1 con direccionamiento nuevo @lid. El filtrado fino (qué se
+      // GUARDA) vive en ingestCore.ts (isStorableChatJid), no aquí.
+      shouldIgnoreJid: (jid: string) => isNewsletterJid(jid),
       browser: Browsers.windows("Dashboard CSA"),
       generateHighQualityLinkPreview: false,
     });

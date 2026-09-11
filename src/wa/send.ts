@@ -25,7 +25,9 @@ import { avisarSalienteManual } from "../campanas/manual";
 import { getActiveSocket, lookupLids } from "./socket";
 import { MEDIA_MAX_BYTES, extFromMime, saveMediaBuffer } from "./mediaStore";
 import { aprenderMapeo, canonicoDe } from "./canonico";
+import { esGrupo } from "./identidad";
 import { registrarMensajePropio, tsOf } from "./ingestCore";
+import type { WAMessage } from "baileys";
 
 const MIN_GAP_MS = 1_500;
 const WINDOW_MS = 5 * 60_000;
@@ -104,6 +106,7 @@ function ensureAuditTable(): void {
 async function requireOnlineChat(
   jidCrudo: string,
   permitirChatNuevo: boolean,
+  permitirGrupo = false,
 ): Promise<
   | { ok: true; sock: NonNullable<ReturnType<typeof getActiveSocket>>; esNuevo: boolean; jid: string }
   | { ok: false; error: string; code: "invalid" | "unknown-chat" | "offline" }
@@ -112,7 +115,10 @@ async function requireOnlineChat(
   // conocido cae en su chat del teléfono): así el mensaje se guarda en la misma
   // fila en la que lo encontrará el eco de WhatsApp.
   const jid = canonicoDe(jidCrudo);
-  if (!jid || !isStorableChatJid(jid)) return { ok: false, error: "Destino no válido (solo chats 1-a-1).", code: "invalid" };
+  if (!jid || !isStorableChatJid(jid)) return { ok: false, error: "Destino no válido.", code: "invalid" };
+  // A un GRUPO solo se escribe a mano desde el teléfono flotante (como en
+  // WhatsApp Web). Las campañas y cualquier automatización no pasan por aquí.
+  if (esGrupo(jid) && !permitirGrupo) return { ok: false, error: "A los grupos solo se escribe a mano.", code: "invalid" };
   const sock = getActiveSocket();
   if (!sock) return { ok: false, error: "WhatsApp no está conectado ahora mismo.", code: "offline" };
 
@@ -153,17 +159,34 @@ function asegurarChat(jid: string, ts: number): void {
 }
 
 /** Envía TEXTO plano a un chat 1-a-1 existente. Escrito a mano por una persona. */
+/**
+ * Reconstruye el mensaje CITADO desde `raw_json` para que WhatsApp pinte la
+ * respuesta como respuesta (con la cita encima). Si no se conserva el original
+ * (histórico sin raw_json), el texto sale sin cita: mejor eso que no salir.
+ */
+function mensajeCitado(jid: string, id: string | null | undefined): WAMessage | undefined {
+  if (!id) return undefined;
+  const row = getDb().prepare("SELECT raw_json FROM messages WHERE chat_jid = ? AND id = ?").get(jid, id) as { raw_json: string | null } | undefined;
+  if (!row?.raw_json) return undefined;
+  try {
+    const m = JSON.parse(row.raw_json) as WAMessage;
+    return m?.key && m?.message ? m : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function sendText(
   jidPedido: string,
   rawText: string,
   actor: string | null,
-  opts: { permitirChatNuevo?: boolean } = {},
+  opts: { permitirChatNuevo?: boolean; permitirGrupo?: boolean; citar?: string | null } = {},
 ): Promise<SendResult> {
   const text = String(rawText ?? "").trim();
   if (!text || text.length > 4096) {
     return { ok: false, error: "El mensaje debe tener entre 1 y 4096 caracteres.", code: "invalid" };
   }
-  const known = await requireOnlineChat(jidPedido, opts.permitirChatNuevo === true);
+  const known = await requireOnlineChat(jidPedido, opts.permitirChatNuevo === true, opts.permitirGrupo === true);
   if (!known.ok) return known;
   const jid = known.jid;
   const rate = checkRate();
@@ -171,7 +194,8 @@ export async function sendText(
 
   const db = getDb();
   try {
-    const result = await known.sock.sendMessage(jid, { text });
+    const quoted = mensajeCitado(jid, opts.citar);
+    const result = await known.sock.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
     markSent();
     const now = Math.floor(Date.now() / 1000);
     // La hora es la del mensaje según WhatsApp, no la del reloj local tras el
@@ -234,8 +258,9 @@ export async function sendMedia(jidPedido: string, input: SendMediaInput, actor:
     return { ok: false, error: `El archivo pesa más de ${Math.round(MEDIA_MAX_BYTES / 1024 / 1024)} MB.`, code: "too-big" };
   }
   // Los ADJUNTOS siguen exigiendo chat existente: estrenar conversacion con
-  // un archivo es peor que con un texto, y nadie lo ha pedido.
-  const known = await requireOnlineChat(jidPedido, false);
+  // un archivo es peor que con un texto, y nadie lo ha pedido. A un grupo sí
+  // (solo se llega aquí desde el teléfono flotante).
+  const known = await requireOnlineChat(jidPedido, false, true);
   if (!known.ok) return known;
   const jid = known.jid;
   const rate = checkRate();
@@ -292,6 +317,54 @@ export async function sendMedia(jidPedido: string, input: SendMediaInput, actor:
   } catch (e) {
     console.error("[send] fallo al enviar adjunto:", (e as Error).message);
     return { ok: false, error: "WhatsApp rechazó el envío. Reintenta.", code: "fail" };
+  }
+}
+
+export type ReactResult = { ok: true; jid: string; msgId: string; emoji: string | null } | { ok: false; error: string; code: "offline" | "invalid" | "unknown-chat" | "fail" };
+
+/**
+ * REACCIONAR a un mensaje (emoji) o quitar la reacción (emoji vacío), como en
+ * WhatsApp Web. Es una publicación hacia WhatsApp, así que vive aquí, en el
+ * único fichero autorizado; se audita igual que un envío. El espejo local se
+ * escribe al confirmar, y el eco `messages.reaction` es idempotente.
+ */
+export async function sendReaction(jidPedido: string, msgId: string, emojiCrudo: string | null, actor: string | null): Promise<ReactResult> {
+  const emoji = String(emojiCrudo ?? "").trim();
+  if (emoji.length > 8) return { ok: false, error: "Reacción no válida.", code: "invalid" };
+  const known = await requireOnlineChat(jidPedido, false, true);
+  if (!known.ok) return known;
+  const jid = known.jid;
+  const db = getDb();
+  const row = db.prepare("SELECT from_me, participant, raw_json FROM messages WHERE chat_jid = ? AND id = ?").get(jid, msgId) as
+    | { from_me: number; participant: string | null; raw_json: string | null }
+    | undefined;
+  if (!row) return { ok: false, error: "Ese mensaje no está en el historial.", code: "invalid" };
+  let key: WAMessage["key"] = { remoteJid: jid, id: msgId, fromMe: row.from_me === 1, ...(row.participant ? { participant: row.participant } : {}) };
+  try {
+    const original = row.raw_json ? (JSON.parse(row.raw_json) as WAMessage) : null;
+    if (original?.key?.id) key = original.key;
+  } catch {
+    /* clave mínima */
+  }
+  try {
+    await known.sock.sendMessage(jid, { react: { text: emoji, key } });
+    if (emoji) {
+      db.prepare(
+        `INSERT INTO wa_reactions (chat_jid, msg_id, sender, emoji, ts) VALUES (?, ?, 'me', ?, ?)
+         ON CONFLICT(chat_jid, msg_id, sender) DO UPDATE SET emoji = excluded.emoji, ts = excluded.ts`
+      ).run(jid, msgId, emoji, Math.floor(Date.now() / 1000));
+    } else {
+      db.prepare("DELETE FROM wa_reactions WHERE chat_jid = ? AND msg_id = ? AND sender = 'me'").run(jid, msgId);
+    }
+    ensureAuditTable();
+    db.prepare(`INSERT INTO wa_send_audit (chat_jid, actor, chars, wa_msg_id, created_at, kind) VALUES (?, ?, ?, ?, ?, 'react')`).run(
+      jid, actor, emoji.length, msgId, Math.floor(Date.now() / 1000)
+    );
+    emitSse({ type: "message.updated", jid });
+    return { ok: true, jid, msgId, emoji: emoji || null };
+  } catch (e) {
+    console.error("[send] fallo al reaccionar:", (e as Error).message);
+    return { ok: false, error: "WhatsApp rechazó la reacción. Reintenta.", code: "fail" };
   }
 }
 

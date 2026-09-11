@@ -48,11 +48,47 @@ export interface WaLabel {
   color: number;
 }
 
+/** Estado de entrega de un mensaje propio (los ticks de WhatsApp). */
+export type WaEstadoMensaje = "error" | "pending" | "sent" | "delivered" | "read" | "played";
+
+/** Una reacción a un mensaje. `fromMe` = la pusimos nosotros. */
+export interface WaReaccion {
+  emoji: string;
+  fromMe: boolean;
+  /** jid canónico de quien reaccionó (null si fuimos nosotros). */
+  sender: string | null;
+  senderName?: string | null;
+  ts: number | null;
+}
+
+/** El mensaje CITADO por una respuesta (para pintarlo encima y saltar a él). */
+export interface WaCita {
+  id: string;
+  fromMe: boolean;
+  participantName: string | null;
+  text: string | null;
+  type: WaMessage["type"];
+}
+
+/** Presencia de un contacto en el chat abierto. */
+export type WaPresencia = "available" | "unavailable" | "composing" | "recording" | "paused";
+
 export interface ChatSummary {
   jid: string;
   /** Teléfono canónico ES (9 dígitos) o null si internacional/no parseable. */
   phone: string | null;
   displayName: string;
+  /** Es un GRUPO (`@g.us`). Desde 2026-09-11 los grupos entran como en WhatsApp Web. */
+  isGroup?: boolean;
+  /** Estado que sincroniza el móvil: archivado, fijado (epoch s del fijado) y silenciado hasta (epoch s). */
+  archived?: boolean;
+  pinned?: number | null;
+  mutedUntil?: number | null;
+  /** El último mensaje lo escribimos nosotros, y en qué estado está (para el tick de la lista). */
+  lastMessageFromMe?: boolean | null;
+  lastMessageStatus?: WaEstadoMensaje | null;
+  /** Nº de participantes (solo grupos). */
+  participants?: number;
   /**
    * EL OTRO NOMBRE con el que esta persona está guardada, si difiere del que se
    * enseña.
@@ -101,6 +137,22 @@ export interface WaMessage {
    * mano son los dos `from_me = 1` y nada mas los distingue.
    */
   automatico?: boolean;
+  /** El binario no está guardado pero conserva las claves: se puede pedir bajo demanda. */
+  recuperable?: boolean;
+  /* ---- paridad con WhatsApp Web (2026-09-11) ---- */
+  /** Ticks reales (solo mensajes propios). */
+  status?: WaEstadoMensaje | null;
+  /** «Se eliminó este mensaje» (borrado para todos). El texto no se enseña. */
+  revoked?: boolean;
+  /** «Editado». */
+  edited?: boolean;
+  /** Quién lo escribió dentro de un grupo (jid canónico) y su nombre. */
+  participant?: string | null;
+  participantName?: string | null;
+  reactions?: WaReaccion[];
+  quoted?: WaCita | null;
+  /** Línea de SISTEMA ya redactada («Ana se unió», «Llamada perdida», «Esperando el mensaje…»). */
+  system?: string | null;
 }
 
 /* ----------------------------- Artefactos IA ----------------------------- */
@@ -154,6 +206,10 @@ export type WaSseEvent =
   | { type: "ping" } // latido visible cada 25s — el cliente reconecta si deja de llegar
   | { type: "connection"; state: WaConnectionState }
   | { type: "message.new"; jid: string }
+  /** Un mensaje YA guardado cambió (ticks, reacción, borrado, edición): refresca la conversación, no la lista. */
+  | { type: "message.updated"; jid: string }
+  /** Presencia del contacto (o de un participante del grupo) del chat suscrito. */
+  | { type: "presence"; jid: string; participant: string | null; state: WaPresencia; lastSeen: number | null }
   | { type: "chat.updated"; jid: string }
   | { type: "labels.updated" } // catálogo/asociaciones de etiquetas de WhatsApp Business
   | { type: "chats.synced" } // volcado masivo (history sync): refrescar lista entera

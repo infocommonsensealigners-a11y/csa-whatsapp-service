@@ -37,11 +37,12 @@ export function isIndividualJid(jid: string | null | undefined): boolean {
 }
 
 /**
- * Un chat que SÍ guardamos y mostramos: conversación 1-a-1 (número o LID),
- * nunca grupo, difusión/estado ni newsletter.
+ * Un chat que SÍ guardamos y mostramos: conversación 1-a-1 (número o LID) o
+ * GRUPO (decisión del usuario 2026-09-11: «lo de los grupos intégralo»); nunca
+ * difusión/estado ni newsletter.
  */
 export function isStorableChatJid(jid: string): boolean {
-  return !!jid && !isGroupJid(jid) && !isBroadcastJid(jid) && !isNewsletterJid(jid);
+  return !!jid && !isBroadcastJid(jid) && !isNewsletterJid(jid);
 }
 
 /** '34611222333@s.whatsapp.net' → '611222333'; no-ES / LID / no individual → null. */

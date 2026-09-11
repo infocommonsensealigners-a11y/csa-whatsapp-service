@@ -191,6 +191,8 @@ export type AnalyzeResult =
 /** Analiza un chat y persiste la inteligencia en Supabase. */
 export async function analyzeChat(jid: string): Promise<AnalyzeResult> {
   if (!brainConfigured()) return { ok: false, reason: "brain-not-configured", status: 503 };
+  // La inteligencia de Fransua es por LEAD: un grupo no es una persona.
+  if (jid.endsWith("@g.us")) return { ok: false, reason: "los grupos no se analizan", status: 422 };
   const db = getDb();
   const meta = db.prepare("SELECT phone, display_name FROM chats WHERE jid = ?").get(jid) as
     | { phone: string | null; display_name: string | null }

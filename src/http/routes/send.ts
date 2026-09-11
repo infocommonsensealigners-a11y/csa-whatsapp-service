@@ -1,12 +1,15 @@
 /**
- * POST /chats/:jid/send { text } — responder A MANO desde el teléfono flotante
- * del dashboard (decisión del usuario 2026-07-29). Solo se llega aquí por el
- * proxy del dashboard, que exige sesión; el actor real viaja en `x-csa-user`
- * y queda auditado en wa_send_audit (ver src/wa/send.ts, el único módulo con
- * permiso de publicación según check:nosend).
+ * POST /chats/:jid/send { text, citar? } — responder A MANO desde el teléfono
+ * flotante del dashboard (decisión del usuario 2026-07-29). Solo se llega aquí
+ * por el proxy del dashboard, que exige sesión; el actor real viaja en
+ * `x-csa-user` y queda auditado en wa_send_audit (ver src/wa/send.ts, el único
+ * módulo con permiso de publicación según check:nosend).
+ *
+ * Desde aquí SÍ se puede escribir a un grupo (como en WhatsApp Web); las
+ * automatizaciones no, porque no pasan por esta ruta.
  */
 import type { FastifyInstance } from "fastify";
-import { sendText, sendMedia, type SendMediaInput } from "../../wa/send";
+import { sendReaction, sendText, sendMedia, type SendMediaInput } from "../../wa/send";
 
 function statusFor(code: string): number {
   return code === "offline" ? 503 : code === "rate" ? 429 : code === "too-big" ? 413 : code === "fail" ? 502 : 400;
@@ -15,9 +18,22 @@ function statusFor(code: string): number {
 export function registerSendRoutes(app: FastifyInstance): void {
   app.post("/chats/:jid/send", async (request, reply) => {
     const jid = decodeURIComponent(String((request.params as { jid?: string }).jid ?? ""));
-    const body = (request.body ?? {}) as { text?: unknown };
+    const body = (request.body ?? {}) as { text?: unknown; citar?: unknown };
     const actor = String(request.headers["x-csa-user"] ?? "").trim() || null;
-    const r = await sendText(jid, String(body.text ?? ""), actor);
+    const citar = typeof body.citar === "string" && body.citar.trim() ? body.citar.trim() : null;
+    const r = await sendText(jid, String(body.text ?? ""), actor, { permitirGrupo: true, citar });
+    if (!r.ok) return reply.status(statusFor(r.code)).send(r);
+    return r;
+  });
+
+  /** POST /chats/:jid/react { msgId, emoji } — emoji vacío = quitar la reacción. */
+  app.post("/chats/:jid/react", async (request, reply) => {
+    const jid = decodeURIComponent(String((request.params as { jid?: string }).jid ?? ""));
+    const body = (request.body ?? {}) as { msgId?: unknown; emoji?: unknown };
+    const actor = String(request.headers["x-csa-user"] ?? "").trim() || null;
+    const msgId = String(body.msgId ?? "").trim();
+    if (!msgId) return reply.status(400).send({ ok: false, error: "Falta msgId.", code: "invalid" });
+    const r = await sendReaction(jid, msgId, typeof body.emoji === "string" ? body.emoji : null, actor);
     if (!r.ok) return reply.status(statusFor(r.code)).send(r);
     return r;
   });

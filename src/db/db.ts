@@ -75,6 +75,23 @@ function migrate(d: Database.Database): void {
   ensureColumn(d, "chats", "alias_of", "TEXT");
   /** Remitente dentro de un GRUPO (jid del participante). NULL en chats 1-a-1. */
   ensureColumn(d, "messages", "participant", "TEXT");
+  /**
+   * PARIDAD CON WHATSAPP WEB (2026-09-11). Estado de entrega de un mensaje
+   * propio (0 error · 1 pendiente · 2 enviado · 3 entregado · 4 leído · 5
+   * reproducido), borrado para todos (`revoked`), edición (`edited`), borrado
+   * solo para mí (`deleted_for_me`, se oculta) y mensajes de SISTEMA (`stub`:
+   * «X se unió al grupo», «Llamada perdida», «Esperando el mensaje…»).
+   */
+  ensureColumn(d, "messages", "status", "INTEGER");
+  ensureColumn(d, "messages", "revoked", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(d, "messages", "edited", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(d, "messages", "deleted_for_me", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(d, "messages", "stub", "TEXT");
+  /** Estado del chat que el móvil sincroniza: archivado, fijado (ts), silenciado (hasta), borrado. */
+  ensureColumn(d, "chats", "archived", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(d, "chats", "pinned", "INTEGER");
+  ensureColumn(d, "chats", "mute_until", "INTEGER");
+  ensureColumn(d, "chats", "deleted_at", "INTEGER");
 
   // Tablas añadidas post-v1 (etiquetas de WhatsApp): crear SIEMPRE, idempotente.
   // El schema.sql solo se aplica a BDs nuevas (current < 1); las existentes
@@ -122,6 +139,25 @@ function migrate(d: Database.Database): void {
       verified_name TEXT,
       lid TEXT,
       updated_at INTEGER NOT NULL
+    );
+    -- Reacciones a mensajes. 'sender' = 'me' (nuestra) o el jid canónico de quien
+    -- reaccionó. Una reacción por persona y mensaje: cambiarla la sustituye,
+    -- quitarla la borra (WhatsApp manda texto vacío).
+    CREATE TABLE IF NOT EXISTS wa_reactions (
+      chat_jid TEXT NOT NULL,
+      msg_id TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      emoji TEXT NOT NULL,
+      ts INTEGER,
+      PRIMARY KEY (chat_jid, msg_id, sender)
+    );
+    -- Participantes de cada grupo (para nombrar a quien habla y contar cabezas).
+    CREATE TABLE IF NOT EXISTS wa_group_participants (
+      group_jid TEXT NOT NULL,
+      jid TEXT NOT NULL,
+      admin INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (group_jid, jid)
     );
   `);
 

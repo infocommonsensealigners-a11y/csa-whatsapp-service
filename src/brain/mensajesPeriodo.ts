@@ -115,7 +115,9 @@ export type DatoBuscado = "direccion" | "email" | "codigo_postal";
  * filtro solo acota lo que ve Fransua, y es él quien decide si lo es.
  */
 export function pareceDireccion(texto: string): boolean {
-  const t = texto.trim();
+  // Fuera emails y enlaces antes de buscar un CP: «02809@grupomrw.com» no es una
+  // dirección (falso positivo medido con los chats reales, 11-09-2026).
+  const t = texto.replace(/\S+@\S+|https?:\/\/\S+|www\.\S+/gi, " ").trim();
   if (t.length < 8 || t.length > 600) return false;
   const conVia = RE_VIA.test(t) && /\d/.test(t);
   const conCp = RE_CP.test(t) && /[a-záéíóúñ]{3,}/i.test(t) && t.length <= 250;

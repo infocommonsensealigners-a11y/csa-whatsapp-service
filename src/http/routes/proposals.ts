@@ -1,5 +1,5 @@
 /**
- * CONECTORES — Plaud → Propuesta SBA. Convierte la transcripción de una llamada
+ * CONECTORES — Plaud → Propuesta. Convierte la transcripción de una llamada
  * de venta de Fran en el contenido personalizado de la propuesta (mismo esquema
  * que `PLAUD A PROPUESTA/contenido_APELLIDO.py`: hero, NEEDS, REA, bloque
  * estrella). Usa Claude vía la SUSCRIPCIÓN (ai/agent runJson), igual que
@@ -73,7 +73,7 @@ const SCHEMA_KEYS = [
  * y la Certificación es 100% Invisalign. Aquí solo va lo que cambia el TEXTO que
  * redacta la IA; el resto (precios, enlaces, colores) lo pone el dashboard.
  */
-type Programa = "sba" | "certificacion";
+type Programa = "sba" | "certificacion" | "estancia";
 
 const PROGRAMA_BRIEF: Record<Programa, string> = {
   sba: `PROGRAMA: "Sistema de Biomecánica Avanzada" (SBA) — formación de CSA MULTIMARCA.
@@ -86,6 +86,32 @@ const PROGRAMA_BRIEF: Record<Programa, string> = {
 - Bloques: Teoría · Biomecánica mixta / Revisión de casos / Talleres de técnicas auxiliares / Estancia clínica.
 - Es habitual que el lead sea alguien que ACABA la carrera o empieza: si aún no tiene pacientes, los 10 meses de revisión de casos se GUARDAN y se activan cuando entre en clínica (dilo así, es un argumento fuerte).
 - NUNCA menciones otras marcas de alineador como opción del programa.`,
+  estancia: `PRODUCTO: "Estancia clínica en Ortodoncia Lozano" vendida SUELTA — UN DÍA presencial, NO el programa de 10 meses.
+- Es un producto DISTINTO del SBA y de la Certificación. En esos dos la estancia va incluida; aquí se compra sola.
+- ⛔ NO prometas NADA del programa de 10 meses: ni los módulos de teoría, ni la revisión diaria de casos, ni las sesiones en directo, ni los talleres mensuales, ni la comunidad, ni el acceso a la plataforma. No existen en este producto. Si el doctor/a los pidió en la llamada, dilo como lo que es: eso es el programa completo, y de eso se habla aparte.
+- Lo que SÍ incluye, y es lo único que puedes prometer: un día completo (9:30-19:00) junto al Dr. Lozano en la clínica; el ENFOQUE lo elige el doctor/a (casos y técnicas auxiliares, marketing, gestión de la consulta o mixto) y se pacta antes; 5 vídeos editados del día; un manual de más de 300 páginas; y 2 reuniones de seguimiento posteriores.
+- El valor está en VER TRABAJAR a una clínica de verdad: pacientes reales, decisiones reales y el porqué de cada una, más lo que se lleva para aplicarlo en su consulta.
+- Objeciones propias de este producto (trátalas en "rea" si salieron): el viaje y cuadrar el día, si en un solo día da tiempo a ver lo que le interesa, si podrá preguntar sus casos, qué se lleva para después, y si lo que pague se le descuenta si luego entra en el programa (eso NO lo afirmes: si se habló, déjalo como algo a confirmar con Fran).`,
+};
+
+/**
+ * Los 4 bloques que se pueden destacar, POR PRODUCTO. El campo "starBlock" se
+ * guarda por posición (1º…4º), así que en la estancia las mismas cuatro claves
+ * significan otra cosa: si no se le dijera al modelo, elegiría "revision"
+ * —revisión de casos— en una propuesta donde ese bloque no existe.
+ */
+const STAR_BLOCK_BRIEF: Record<Programa, string> = {
+  sba: `"biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (Estancia clínica — más casos/marketing/equipo)`,
+  certificacion: `"biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (Estancia clínica — más casos/marketing/equipo)`,
+  estancia: `"biomecanica" (El día en la clínica — quiere ver trabajar, pacientes y decisiones reales; es el valor por DEFECTO), "revision" (El enfoque lo eliges tú — viene con un tema muy concreto: marketing, gestión, un tipo de caso…), "tecnicas" (Lo que te llevas — los vídeos del día y el manual, para volver sobre ello), "estancia" (Seguimiento posterior — lo que más valora es poder consultar después)`,
+};
+
+/** La modalidad "extension" (3 meses extra en lugar de la estancia) solo existe
+ *  en los programas de 10 meses: en la estancia suelta no hay nada que sustituir. */
+const MODALIDAD_BRIEF: Record<Programa, string> = {
+  sba: `- "modalidad": "estancia" (lo normal) o "extension". Pon "extension" SOLO si en la llamada queda claro que el doctor/a NO va a poder venir a la estancia clínica presencial en España — porque vive fuera (Latinoamérica: México, Colombia, Argentina, Chile, Perú, Ecuador…) o porque dice que no va a viajar. En ese caso el programa NO pierde la estancia sin más: se sustituye por 3 MESES EXTRA de formación (13 meses en total), y así se lo cuentas donde toque (hero y "rea"). Si vive en España o no se habla del tema, "estancia".`,
+  certificacion: `- "modalidad": "estancia" (lo normal) o "extension". Pon "extension" SOLO si en la llamada queda claro que el doctor/a NO va a poder venir a la estancia clínica presencial en España — porque vive fuera (Latinoamérica: México, Colombia, Argentina, Chile, Perú, Ecuador…) o porque dice que no va a viajar. En ese caso el programa NO pierde la estancia sin más: se sustituye por 3 MESES EXTRA de formación (13 meses en total), y así se lo cuentas donde toque (hero y "rea"). Si vive en España o no se habla del tema, "estancia".`,
+  estancia: `- "modalidad": siempre "estancia". Este producto ES el día presencial, así que no hay nada que sustituir por meses de programa: no uses "extension" bajo ningún concepto. Si en la llamada se ve que le cuesta viajar, eso va en "rea" (cómo se cuadra el día), no en la modalidad.`,
 };
 
 function buildPrompt(transcript: string, programa: Programa): string {
@@ -105,8 +131,8 @@ REGLAS (obligatorias):
 - "needs": 4 a 6 puntos de dolor REALES de la llamada. "want" = una frase citada ENTRE COMILLAS ANGULARES «» lo más textual posible a como lo dijo el/la doctor/a (no la inventes; si no hay cita textual clara, parafrasea en primera persona). "tag" = etiqueta corta (2-4 palabras) del bloque/tema al que corresponde. "fix" = cómo se resuelve en el programa (con el Dr. Lozano), 1-3 frases.
 - "rea": 5 a 7 objeciones o dudas que salieron en la llamada (horario, nivel/experiencia previa, tiene clínica propia o colabora en varias, si aún no tiene pacientes, fechas/vacaciones, dónde es la estancia, etc.), resueltas. "t" = titular en pocas palabras terminado en ":". "d" = resolución en 1-2 frases.
 - CONSISTENCIA: cualquier nombre propio que se repita (marca de alineador, técnica, nombre de persona, clínica...) debe escribirse EXACTAMENTE IGUAL cada vez que aparezca, tanto en "heroLead1"/"heroLead2" como en "needs"/"rea" — nunca dos grafías distintas del mismo dato en la misma propuesta. Si la transcripción (voz→texto de Plaud) lo transcribe de forma ambigua o dudosa (marca poco común, nombre extranjero), elige UNA sola grafía y úsala en todos los sitios, y genera un aviso de tipo "general" avisando de que ese nombre puede no estar bien transcrito.
-- "modalidad": "estancia" (lo normal) o "extension". Pon "extension" SOLO si en la llamada queda claro que el doctor/a NO va a poder venir a la estancia clínica presencial en España — porque vive fuera (Latinoamérica: México, Colombia, Argentina, Chile, Perú, Ecuador…) o porque dice que no va a viajar. En ese caso el programa NO pierde la estancia sin más: se sustituye por 3 MESES EXTRA de formación (13 meses en total), y así se lo cuentas donde toque (hero y "rea"). Si vive en España o no se habla del tema, "estancia".
-- "starBlock": cuál de estos 4 bloques FIJOS del programa es el dolor PRINCIPAL de este doctor/a — responde exactamente uno de: "biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (Estancia clínica — más casos/marketing/equipo).
+${MODALIDAD_BRIEF[programa]}
+- "starBlock": cuál de estos 4 bloques FIJOS es el dolor PRINCIPAL de este doctor/a — responde exactamente uno de: ${STAR_BLOCK_BRIEF[programa]}.
 - "giftDeadlineOverride": SOLO UNA FECHA, corta y tal como se diría en alto ("1 de septiembre", "viernes 31 de julio"). Se pinta detrás de "Beneficio adicional por inscribirte antes del", asi que una frase ahi deja el titular sin sentido (paso de verdad: salio "…antes del Si te matriculas durante estos dias de agosto…"). Si en la llamada se explica una CONDICION o un beneficio de la edicion, no lo metas aqui: va en "regaloExtraOverride".
 - "regaloExtraOverride": array de beneficios concretos que se prometieron en la llamada, redactados como puntos cortos y naturales (p. ej. "Acceso a la plataforma durante agosto de regalo: no resta de los 10 meses de formacion."). null si no se prometio nada aparte de lo habitual.
 - "planDescOverride"/"fechasOverride": antes de dejarlos en null, repasa TODA la transcripción buscando cualquier fecha, plazo o mes que el/la doctor/a o Fran mencionen (fecha límite de inscripción, inicio de curso, vacaciones, "para cuándo", pago aplazado, etc.) — si se menciona una fecha/plazo EXPLÍCITO distinto al habitual del programa, captúralo aquí en vez de dejarlo pasar; si hay una fecha mencionada pero no queda claro a qué corresponde exactamente, captúrala igualmente en "fechasOverride" y añade un aviso de campo "fechas" explicando la duda. Solo se queda todo en null si la llamada de verdad no menciona ninguna fecha. Nunca inventes precios ni IBAN.
@@ -116,7 +142,7 @@ REGLAS (obligatorias):
   - "indice": posición 0-based del elemento de "needs"/"rea" al que se refiere (null si no aplica o si "campo" no es "needs"/"rea").
   - "mensaje": explicación breve y concreta (p. ej. "No se recogió el apellido, solo el nombre de pila", "Cita parafraseada, no es literal porque no se dijo así exactamente", "Quedó pendiente de confirmar con el Dr. Lozano, no se ha aplicado como fecha").
   Genera UN aviso por cada cosa de la que no estés seguro/a al 100%: dato incompleto, cita no literal, información pendiente de confirmar, ambigüedad en el bloque estrella, etc. Si todo quedó claro, deja el array vacío.
-- Si "modalidad" es "extension": NO prometas la estancia presencial en NINGÚN texto (ni hero, ni needs, ni rea) y NO elijas "estancia" como starBlock. Donde toque, di que se sustituye por 3 meses extra de formación —13 meses en total—, con las palabras del doctor/a sobre por qué no puede viajar.
+- Si "modalidad" es "extension" (solo puede serlo en los programas de 10 meses): NO prometas la estancia presencial en NINGÚN texto (ni hero, ni needs, ni rea) y NO elijas "estancia" como starBlock. Donde toque, di que se sustituye por 3 meses extra de formación —13 meses en total—, con las palabras del doctor/a sobre por qué no puede viajar.
 - Español de España, sin inventar datos que no estén en la transcripción. Nunca menciones precios, el IBAN ni enlaces (van fijos en la plantilla, no los tocas).
 
 TRANSCRIPCIÓN (Plaud):
@@ -222,13 +248,18 @@ function validateCleaned(obj: unknown): CleanedTranscript | null {
 }
 
 export function registerProposalRoutes(app: FastifyInstance): void {
-  // POST /proposals/extract { transcript } → borrador de contenido para la propuesta SBA.
+  // POST /proposals/extract { transcript, programa } → borrador de contenido para la propuesta
+  // del producto que toque (SBA, Certificación o Estancia clínica suelta).
   app.post("/proposals/extract", async (req, reply) => {
     const body = (req.body ?? {}) as { transcript?: unknown; programa?: unknown };
     const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
     // Qué propuesta se está redactando; lo decide el dashboard por la carpeta de
     // la llamada. Por defecto SBA (es el que existía antes de la Certificación).
-    const programa: Programa = body.programa === "certificacion" ? "certificacion" : "sba";
+    // Qué propuesta se redacta. Lo decide el dashboard: la carpeta de la llamada
+    // y, sobre todo, lo que dice la TRANSCRIPCIÓN (deteccionProducto.ts) — antes
+    // una llamada de estancias acababa con la propuesta de SBA.
+    const programa: Programa =
+      body.programa === "certificacion" ? "certificacion" : body.programa === "estancia" ? "estancia" : "sba";
     if (!transcript) return reply.status(400).send({ ok: false, error: 'Falta "transcript".' });
     if (transcript.length < 200) {
       return reply.status(422).send({ ok: false, error: "La transcripción es demasiado corta para extraer una propuesta fiable." });

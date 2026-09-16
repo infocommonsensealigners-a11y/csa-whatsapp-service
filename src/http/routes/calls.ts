@@ -6,7 +6,7 @@
  * Diseño: DOCS/ANALISIS-LLAMADAS-DISENO.md. Anclado al Playbook real de CSA
  * (CEREBRO-ESTRATEGICO-FRANSUA.md): argumentos de peso (mentoría Dr. Lozano,
  * sesiones en directo, estancia clínica, biomecánica), objeciones típicas
- * (precio, sistema propio, tiempo) y sus técnicas (financiación 325€×12, etc.),
+ * (precio, sistema propio, tiempo) y sus técnicas (el aplazado, hoy hasta 9 cuotas),
  * y señales de compra reales. NO es coaching genérico.
  *
  * Claude vía la SUSCRIPCIÓN (ai/agent runJson), sin API key nueva, sin Supabase.
@@ -96,41 +96,98 @@ function buildCalibracionBlock(cals: CalibracionHint[]): string {
 
 /** Programa de la llamada (auditoría 2026-07-28): antes el prompt SIEMPRE
  *  hablaba de SBA y sus precios → en llamadas de la Certificación Invisalign el
- *  análisis evaluaba con la oferta equivocada (2.900€/241,66€/mes, SIN pronto
+ *  análisis evaluaba con la oferta equivocada (2.900€, SIN pronto
  *  pago) y el sesgo entraba además en la recalibración. Mismos datos que
  *  dashboard/lib/domain/conectoresProgramas.ts. */
-type ProgramaKey = "sba" | "cert";
+type ProgramaKey = "sba" | "cert" | "estancia";
 const PROGRAMA_BRIEF: Record<ProgramaKey, { nombre: string; oferta: string }> = {
   sba: {
     nombre: "SBA (Sistema de Biomecánica Avanzada)",
-    oferta: "PRECIO (financiación 325€×12, 5.900→3.900, 10% dto. por pago único, ROI), estancia clínica incluida",
+    oferta: "PRECIO (aplazado 433,33€×9 cuotas —el máximo bajó de 12 a 9 en septiembre de 2026—, 5.900→3.900, 10% dto. por pago único, ROI), estancia clínica incluida",
   },
   cert: {
     nombre: "Certificación en Ortodoncia Plástica (para doctores que ya usan Invisalign/Spark)",
-    oferta: "PRECIO (financiación 241,66€×12, total 2.900€ — SIN descuento por pago único, ROI)",
+    oferta: "PRECIO (aplazado 322,22€×9 cuotas, total 2.900€ — SIN descuento por pago único, ROI)",
+  },
+  estancia: {
+    nombre: "Estancia clínica SUELTA en Ortodoncia Lozano (UN DÍA presencial, sin el programa de 10 meses)",
+    oferta: "PRECIO (1.000 € el día, aplazable hasta en 9 cuotas), lo que se lleva (5 vídeos editados, manual de +300 páginas, 2 reuniones de seguimiento)",
   },
 };
 function normPrograma(v: unknown): ProgramaKey | null {
   const s = String(v ?? "").toLowerCase();
+  // La estancia va PRIMERO: su propio nombre contiene "clinic"/"estancia" y una
+  // llamada de estancia suelta no se evalúa con el baremo del programa de 10 meses.
+  if (/estancia/.test(s)) return "estancia";
   if (/cert|invisalign|plastic/.test(s)) return "cert";
   if (/sba|biomec/.test(s)) return "sba";
   return null;
+}
+
+/**
+ * EL PLAYBOOK con el que se juzga la llamada. La estancia clínica SUELTA tiene
+ * el suyo (petición del usuario, septiembre de 2026: «para estancias clínicas
+ * hay que crear un sistema de valoración… ligeramente distinto y adaptado a
+ * este producto»): ahí no se vende un programa de 10 meses, se vende UN DÍA, y
+ * medirlo con el baremo del SBA penalizaba lo que en la estancia no existe
+ * —sesiones en directo, talleres, revisión diaria— y no miraba lo único que de
+ * verdad decide: a qué viene, qué se lleva y con qué fecha se queda.
+ */
+function playbookDe(programa: ProgramaKey | null, objecionPrecio: string): string {
+  if (programa === "estancia") {
+    return `Ánclate en lo que es ESTE producto (no en el programa de 10 meses, y no en coaching genérico):
+- Lo que se vende es UN DÍA: el doctor/a viene a la clínica (9:30-19:00) con el Dr. Lozano, ve pacientes y decisiones reales, ELIGE el enfoque del día (casos y técnicas auxiliares, marketing, gestión de la consulta o mixto) y se lleva 5 vídeos editados, un manual de +300 páginas y 2 reuniones de seguimiento.
+- Argumentos de peso AQUÍ: ver trabajar de verdad (no teoría), un día a medida de lo que él/ella quiere resolver, lo que se lleva para después y el seguimiento posterior.
+- ⛔ Lo que NO se vende en este producto: teoría, revisión diaria de casos, sesiones en directo, talleres mensuales ni comunidad — eso es el programa completo. Si Fran prometió algo de eso en esta llamada, ES UN FALLO y hay que decirlo: se está vendiendo algo distinto de lo que se va a entregar.
+- Qué conviene averiguar (para PREPARAR el día, no como lista que haya que completar): a qué viene exactamente, qué casos trae o qué se le atasca, si le tira más la parte clínica o la de gestión/marketing, desde dónde viaja y qué fechas le cuadran.
+- Objeciones típicas de la estancia y sus técnicas: ${objecionPrecio}; "un solo día se me queda corto", el viaje y cuadrar la agenda, "¿podré preguntar mis casos?", "¿qué me llevo para después?", y si el importe se descuenta luego si entra en el programa (esa condición la decide Fran con dirección: no se promete a la ligera).
+- Cómo se cierra AQUÍ: no hace falta cerrar en la llamada, pero sí salir con FECHAS candidatas para el día y con el enfoque apuntado. Una estancia sin fecha se enfría sola, porque no hay edición ni plazo que empuje.
+- Señales de compra: pregunta por fechas o por cómo llegar, pregunta qué tiene que traer, cuenta qué casos quiere enseñar, pregunta por el material que se lleva.`;
+  }
+  return `Ánclate en el PLAYBOOK REAL de CSA (no coaching genérico):
+- Argumentos de peso: la mentoría/revisión de casos con el Dr. Lozano, las SESIONES EN DIRECTO (martes/jueves), la estancia clínica, la biomecánica avanzada (curva de Spee, refinamientos, previsibilidad), casos reales, prueba social (testimonios de compañeros).
+- Qué conviene averiguar (para ADAPTAR la explicación, no como lista que haya que completar): qué sistema/marca usa, qué casos le llegan y cuáles deriva, qué quiere conseguir. Si el doctor/a ya venía decidido y no hizo falta indagar, eso NO es un fallo de Fran.
+- Objeciones típicas y sus técnicas: ${objecionPrecio}; "me lo pienso", falta de tiempo/agenda, "ya hago Invisalign", sistema propio, desconfianza del método.
+- Cómo se cierra AQUÍ (medido en las llamadas reales de CSA, no en manuales de venta): la llamada termina acordando la PROPUESTA y un seguimiento; la decisión se toma después. En las llamadas que acabaron en COMPRA no se pidió el cierre en la llamada, así que no lo exijas: lo que sí suma es que el doctor/a cuelgue sabiendo qué va a recibir, cuándo y qué tiene que decidir.
+- Señales de compra: pregunta por pago/fechas, preguntas operativas, proyecta usarlo con un caso concreto, pide detalles del acceso.`;
+}
+
+/** Las cinco dimensiones, con las anclas de conducta de CADA producto. Las
+ *  CLAVES son las mismas (cualificacion/argumentacion/objeciones/cierre/rapport)
+ *  a propósito: así la nota de Fransua, la autoevaluación de Fran y todas las
+ *  medias del dashboard siguen siendo comparables entre productos. */
+function baremoDe(programa: ProgramaKey | null): string {
+  if (programa === "estancia") {
+    return `BAREMO. Puntúas la EJECUCIÓN DE FRAN, no lo caliente que viniera el doctor/a: todo lo que dependa del lead (cuántas pegas trae, si ya venía decidido, su presupuesto, su entusiasmo) es CONTEXTO y NO sube ni baja la nota.
+Ojo con la escala: esto es una venta CORTA (1.000 €, un día) y de estancias sueltas AÚN NO hay muestra medida en CSA — no te inventes tasas de conversión ni las tomes prestadas del programa de 10 meses. Una llamada bien llevada normal está en 65-80; reserva 85-100 para lo excepcional y baja de 50 solo si hubo fallos claros de ejecución. NO penalices que Fran hable mucho ni el reparto del turno de palabra.
+- CUALIFICACIÓN = saber A QUÉ VIENE, para poder prepararle el día · 0 no preguntó nada, soltó lo que incluye | 40 preguntó por encima | 65 sabe qué quiere ver y qué se le atasca | 85 + sabe qué casos trae, cómo es su consulta y qué espera llevarse | 100 + dejó PACTADO el enfoque del día con las palabras del propio doctor/a.
+- ARGUMENTACIÓN = contarle EL DÍA, no un temario · 0 recitó lo que incluye | 40 ventajas genéricas | 65 le contó cómo es el día conectándolo con lo suyo | 85 + concretó qué vería en SU enfoque y qué se lleva (los 5 vídeos, el manual, las 2 reuniones) | 100 + le puso un ejemplo real de alguien que vino con su mismo problema y con qué se fue. ⛔ Si prometió cosas del programa de 10 meses (teoría, revisión diaria de casos, sesiones en directo, talleres), baja la nota y ponlo en "debilidades": se estaría vendiendo otro producto.
+- OBJECIONES = resolver lo que de verdad frena aquí: el viaje, la fecha, "un día es poco", el precio · 0 las esquivó o las cortó | 40 respondió de pasada | 65 las contestó bien | 85 + con concreción (qué pasa exactamente ese día, cómo se cuadra la fecha) y comprobando que quedaba conforme | 100 + destapó la que no estaba diciendo. Si apenas puso pegas, eso NO es mérito ni demérito: deja 65 y dilo en el resumen.
+- CIERRE = que el día quede EN FIRME o en camino · 0 quedó en el aire | 40 "te paso la información y ya me dices" | 65 acordaron la propuesta y volver a hablar | 85 + con fechas concretas candidatas para la estancia y sabiendo el doctor/a qué tiene que decidir | 100 + salió con el día apalabrado, a falta de confirmar el pago o de cuadrar la agenda de la clínica.
+- RAPPORT = claridad y trato · 0 confuso o cortante | 40 correcto pero plano | 65 se entiende bien y el trato es cómodo | 85 + explica con claridad cómo es el día y responde a lo que pregunta | 100 + conversación de tú a tú: el doctor/a se abre y cuenta qué le preocupa de verdad.
+`;
+  }
+  return `BAREMO. Puntúas la EJECUCIÓN DE FRAN, no lo caliente que viniera el doctor/a. Todo lo que dependa del lead (cuántas objeciones trae, si ya estaba decidido, si viene recomendado, su presupuesto, su entusiasmo) es CONTEXTO y NO baja ni sube la nota: solo se evalúa lo que Fran controla.
+Calibrado con las llamadas REALES de CSA: aquí el 100% llega a propuesta y ~1 de cada 3 compra a 3.900 €, así que una llamada bien llevada NORMAL está en 65-80. Reserva 85-100 para lo excepcional y baja de 50 solo si hubo fallos claros de ejecución. NO penalices que Fran hable mucho: en la venta de una formación de 10 meses hay que EXPLICAR, y en estas llamadas quien compra y quien no compra hablan por igual (medido: 76% en ambos casos). Ni el tiempo ni el reparto del turno de palabra son criterio.
+- CUALIFICACIÓN = entender SU caso para poder adaptar la explicación · 0 no preguntó nada, soltó el programa igual para todos | 40 preguntó lo justo (qué sistema usa) | 65 sabe su situación y qué necesita | 85 + qué casos le llegan, qué deriva y qué quiere conseguir | 100 + lo confirmó con él/ella y ordenó la llamada alrededor de eso.
+- ARGUMENTACIÓN = explicar el programa ligado a lo suyo y con CONCRECIÓN · 0 recitó el temario | 40 ventajas genéricas | 65 conectó las partes con su situación | 85 + argumentos concretos del playbook (casos reales resueltos en vídeo, mentoría del Dr. Lozano, sesiones en directo, biomecánica) | 100 + un caso parecido al suyo que le hizo proyectarse. Los argumentos CONCRETOS son los que aparecen en las llamadas de CSA que acaban en compra.
+- OBJECIONES = resolver con evidencia lo que preocupa · 0 las esquivó o las cortó | 40 respondió de pasada | 65 las contestó bien | 85 + con datos/casos y comprobando que quedaba conforme | 100 + destapó la que no estaba diciendo. Si el doctor/a apenas puso pegas, eso NO es mérito ni demérito de Fran: puntúa cómo trató las que hubo (y si no hubo ninguna, deja 65 y dilo en el resumen).
+- CIERRE = que la llamada acabe con el siguiente paso CLARO · 0 quedó en el aire | 40 "te mando algo y ya hablamos" | 65 acordaron propuesta y quedaron en volver a hablar | 85 + con fecha concreta de seguimiento y sabiendo el doctor/a qué decidir | 100 + resolvió en la llamada lo que faltaba para decidir. OJO: en CSA se vende llamada -> propuesta -> decisión; NO exijas cerrar en la llamada ni pedir cita con dos franjas, y no penalices no haber "pedido el cierre" (en las llamadas que acabaron en COMPRA no se pidió).
+- RAPPORT = claridad y trato · 0 confuso o cortante | 40 correcto pero plano | 65 se entiende bien y el trato es cómodo | 85 + explica lo técnico de forma que se entiende, recoge lo que el otro dice y responde a lo que pregunta | 100 + conversación de tú a tú, el doctor/a se abre. En una formación, EXPLICAR BIEN es parte de vender: la didáctica suma, no resta.
+`;
 }
 
 function buildPrompt(transcript: string, cals: CalibracionHint[] = [], programa: ProgramaKey | null = null): string {
   const prog = programa ? PROGRAMA_BRIEF[programa] : null;
   const contextoPrograma = prog
     ? `Esta llamada es del programa ${prog.nombre} — evalúa contra ESA oferta, no contra otro programa.`
-    : `CSA vende DOS programas: ${PROGRAMA_BRIEF.sba.nombre} y ${PROGRAMA_BRIEF.cert.nombre}. Deduce cuál se está vendiendo y evalúa contra la oferta de ESE programa (no los mezcles).`;
-  const objecionPrecio = prog ? prog.oferta : `según el programa — SBA: ${PROGRAMA_BRIEF.sba.oferta}; Certificación: ${PROGRAMA_BRIEF.cert.oferta}`;
+    : `CSA vende TRES cosas distintas: ${PROGRAMA_BRIEF.sba.nombre}, ${PROGRAMA_BRIEF.cert.nombre} y ${PROGRAMA_BRIEF.estancia.nombre}. Deduce cuál se está vendiendo y evalúa contra la oferta de ESE producto (no los mezcles); si lo que se vende es la estancia suelta, no la juzgues como si fuera el programa de 10 meses.`;
+  const objecionPrecio = prog
+    ? prog.oferta
+    : `según el producto — SBA: ${PROGRAMA_BRIEF.sba.oferta}; Certificación: ${PROGRAMA_BRIEF.cert.oferta}; Estancia suelta: ${PROGRAMA_BRIEF.estancia.oferta}`;
   return `Eres analista comercial senior de Common Sense Aligners (CSA), que forma a dentistas con los programas del Dr. Javier Lozano. Fran es el comercial. ${contextoPrograma} Analiza esta transcripción de una LLAMADA DE VENTA (Plaud) y evalúa CÓMO condujo Fran la llamada: qué hizo bien, qué falló y por qué esa llamada acabaría (o no) convirtiendo. NO redactes propuesta; ESTO ES EVALUACIÓN.${buildCalibracionBlock(cals)}
 
-Ánclate en el PLAYBOOK REAL de CSA (no coaching genérico):
-- Argumentos de peso: la mentoría/revisión de casos con el Dr. Lozano, las SESIONES EN DIRECTO (martes/jueves), la estancia clínica, la biomecánica avanzada (curva de Spee, refinamientos, previsibilidad), casos reales, prueba social (testimonios de compañeros).
-- Qué conviene averiguar (para ADAPTAR la explicación, no como lista que haya que completar): qué sistema/marca usa, qué casos le llegan y cuáles deriva, qué quiere conseguir. Si el doctor/a ya venía decidido y no hizo falta indagar, eso NO es un fallo de Fran.
-- Objeciones típicas y sus técnicas: ${objecionPrecio}; "me lo pienso", falta de tiempo/agenda, "ya hago Invisalign", sistema propio, desconfianza del método.
-- Cómo se cierra AQUÍ (medido en las llamadas reales de CSA, no en manuales de venta): la llamada termina acordando la PROPUESTA y un seguimiento; la decisión se toma después. En las llamadas que acabaron en COMPRA no se pidió el cierre en la llamada, así que no lo exijas: lo que sí suma es que el doctor/a cuelgue sabiendo qué va a recibir, cuándo y qué tiene que decidir.
-- Señales de compra: pregunta por pago/fechas, preguntas operativas, proyecta usarlo con un caso concreto, pide detalles del acceso.
+${playbookDe(programa, objecionPrecio)}
 
 REGLAS de salida:
 - "resumen": 1-2 frases de qué pasó en la llamada y cómo quedó.
@@ -149,13 +206,7 @@ REGLAS de salida:
 - "scores": objeto {cualificacion, argumentacion, objeciones, cierre, rapport}, cada uno 0-100. NO puntúes "a ojo": usa el BAREMO de abajo y elige el tramo cuya conducta describa lo que pasó de verdad.
 - "scoreGlobal": 0-100, valoración global. Debe quedar cerca de la media de las cinco dimensiones (±10): si te sale muy lejos, revisa las dimensiones.
 
-BAREMO. Puntúas la EJECUCIÓN DE FRAN, no lo caliente que viniera el doctor/a. Todo lo que dependa del lead (cuántas objeciones trae, si ya estaba decidido, si viene recomendado, su presupuesto, su entusiasmo) es CONTEXTO y NO baja ni sube la nota: solo se evalúa lo que Fran controla.
-Calibrado con las llamadas REALES de CSA: aquí el 100% llega a propuesta y ~1 de cada 3 compra a 3.900 €, así que una llamada bien llevada NORMAL está en 65-80. Reserva 85-100 para lo excepcional y baja de 50 solo si hubo fallos claros de ejecución. NO penalices que Fran hable mucho: en la venta de una formación de 10 meses hay que EXPLICAR, y en estas llamadas quien compra y quien no compra hablan por igual (medido: 76% en ambos casos). Ni el tiempo ni el reparto del turno de palabra son criterio.
-- CUALIFICACIÓN = entender SU caso para poder adaptar la explicación · 0 no preguntó nada, soltó el programa igual para todos | 40 preguntó lo justo (qué sistema usa) | 65 sabe su situación y qué necesita | 85 + qué casos le llegan, qué deriva y qué quiere conseguir | 100 + lo confirmó con él/ella y ordenó la llamada alrededor de eso.
-- ARGUMENTACIÓN = explicar el programa ligado a lo suyo y con CONCRECIÓN · 0 recitó el temario | 40 ventajas genéricas | 65 conectó las partes con su situación | 85 + argumentos concretos del playbook (casos reales resueltos en vídeo, mentoría del Dr. Lozano, sesiones en directo, biomecánica) | 100 + un caso parecido al suyo que le hizo proyectarse. Los argumentos CONCRETOS son los que aparecen en las llamadas de CSA que acaban en compra.
-- OBJECIONES = resolver con evidencia lo que preocupa · 0 las esquivó o las cortó | 40 respondió de pasada | 65 las contestó bien | 85 + con datos/casos y comprobando que quedaba conforme | 100 + destapó la que no estaba diciendo. Si el doctor/a apenas puso pegas, eso NO es mérito ni demérito de Fran: puntúa cómo trató las que hubo (y si no hubo ninguna, deja 65 y dilo en el resumen).
-- CIERRE = que la llamada acabe con el siguiente paso CLARO · 0 quedó en el aire | 40 "te mando algo y ya hablamos" | 65 acordaron propuesta y quedaron en volver a hablar | 85 + con fecha concreta de seguimiento y sabiendo el doctor/a qué decidir | 100 + resolvió en la llamada lo que faltaba para decidir. OJO: en CSA se vende llamada -> propuesta -> decisión; NO exijas cerrar en la llamada ni pedir cita con dos franjas, y no penalices no haber "pedido el cierre" (en las llamadas que acabaron en COMPRA no se pidió).
-- RAPPORT = claridad y trato · 0 confuso o cortante | 40 correcto pero plano | 65 se entiende bien y el trato es cómodo | 85 + explica lo técnico de forma que se entiende, recoge lo que el otro dice y responde a lo que pregunta | 100 + conversación de tú a tú, el doctor/a se abre. En una formación, EXPLICAR BIEN es parte de vender: la didáctica suma, no resta.
+${baremoDe(programa)}
 - "fortalezas"/"debilidades": arrays de {texto (qué hizo bien / qué falló, 1 frase), cita (evidencia textual «…» o null)}. 2 a 4 de cada, las más relevantes.
 - "recomendaciones": 1 a 3 acciones concretas para que Fran mejore la PRÓXIMA llamada de este tipo.
 - "confianza": "alta" si la transcripción da material claro; "media" si falta contexto; "baja" si es pobre/corta o no se distingue bien la conversación.

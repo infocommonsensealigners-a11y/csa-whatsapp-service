@@ -144,7 +144,11 @@ function playbookDe(programa: ProgramaKey | null, objecionPrecio: string): strin
 - Cómo se cierra AQUÍ: no hace falta cerrar en la llamada, pero sí salir con FECHAS candidatas para el día y con el enfoque apuntado. Una estancia sin fecha se enfría sola, porque no hay edición ni plazo que empuje.
 - Señales de compra: pregunta por fechas o por cómo llegar, pregunta qué tiene que traer, cuenta qué casos quiere enseñar, pregunta por el material que se lleva.`;
   }
-  return `Ánclate en el PLAYBOOK REAL de CSA (no coaching genérico):
+  return `${
+    programa === null
+      ? "⚠️ No consta qué producto es. Si por lo que se habla resulta que se está vendiendo la ESTANCIA CLÍNICA SUELTA (un día presencial, sin el programa de 10 meses), NO la juzgues con el playbook de abajo —que es el del programa—: evalúa si Fran averiguó a qué viene, si le contó el día y lo que se lleva, y si la llamada acabó con una fecha encima de la mesa; y dilo en el resumen.\n\n"
+      : ""
+  }Ánclate en el PLAYBOOK REAL de CSA (no coaching genérico):
 - Argumentos de peso: la mentoría/revisión de casos con el Dr. Lozano, las SESIONES EN DIRECTO (martes/jueves), la estancia clínica, la biomecánica avanzada (curva de Spee, refinamientos, previsibilidad), casos reales, prueba social (testimonios de compañeros).
 - Qué conviene averiguar (para ADAPTAR la explicación, no como lista que haya que completar): qué sistema/marca usa, qué casos le llegan y cuáles deriva, qué quiere conseguir. Si el doctor/a ya venía decidido y no hizo falta indagar, eso NO es un fallo de Fran.
 - Objeciones típicas y sus técnicas: ${objecionPrecio}; "me lo pienso", falta de tiempo/agenda, "ya hago Invisalign", sistema propio, desconfianza del método.

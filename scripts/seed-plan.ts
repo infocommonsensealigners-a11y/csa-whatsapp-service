@@ -1,5 +1,5 @@
 /**
- * Siembra el Plan Comercial Anual real (DOCS/CSA.pdf) en Supabase: 3 reglas de
+ * Siembra el Plan Comercial Anual real (01 DOCUMENTACIÓN/CSA.pdf) en Supabase: 3 reglas de
  * producto + 15 hitos repartidos en 10 de los 12 meses (jul/ago sin hitos —
  * es el hueco antes del relanzamiento de septiembre). IDs estables ⇒
  * re-ejecutar este script actualiza en vez de duplicar.

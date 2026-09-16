@@ -3,7 +3,7 @@
  * Conectores). Mientras `/proposals/extract` saca la PROPUESTA (marketing), esto
  * EVALÚA la llamada de venta: cómo lo hizo el comercial y por qué convierte o no.
  *
- * Diseño: DOCS/ANALISIS-LLAMADAS-DISENO.md. Anclado al Playbook real de CSA
+ * Diseño: 01 DOCUMENTACIÓN/ANALISIS-LLAMADAS-DISENO.md. Anclado al Playbook real de CSA
  * (CEREBRO-ESTRATEGICO-FRANSUA.md): argumentos de peso (mentoría Dr. Lozano,
  * sesiones en directo, estancia clínica, biomecánica), objeciones típicas
  * (precio, sistema propio, tiempo) y sus técnicas (el aplazado, hoy hasta 9 cuotas),

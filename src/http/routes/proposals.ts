@@ -1,7 +1,7 @@
 /**
  * CONECTORES — Plaud → Propuesta. Convierte la transcripción de una llamada
  * de venta de Fran en el contenido personalizado de la propuesta (mismo esquema
- * que `PLAUD A PROPUESTA/contenido_APELLIDO.py`: hero, NEEDS, REA, bloque
+ * que `04 MATERIAL DE CLIENTE/PLAUD A PROPUESTA/contenido_APELLIDO.py`: hero, NEEDS, REA, bloque
  * estrella). Usa Claude vía la SUSCRIPCIÓN (ai/agent runJson), igual que
  * /intel/extract-fiscal — sin ANTHROPIC_API_KEY nuevo y sin tocar Supabase.
  *

@@ -419,29 +419,180 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     return { ok: true };
   });
 
-  // AUDITORÍA de acciones (idea 4): rastro unificado de todo lo que se ejecutó
-  // con aprobación (agendar, cambiar estado…) — quién, qué, cuándo. Filtrable por
-  // lead (?sourceRow=). Es el "log de eventos" que the dashboard puede mostrar.
+  /**
+   * AUDITORÍA de acciones: rastro unificado de todo lo que se ejecutó — quién,
+   * qué, sobre qué lead, cuándo y con qué resultado.
+   *
+   * Parámetros: ?sourceRow= (un lead), ?desde=/?hasta= (ISO o YYYY-MM-DD),
+   * ?soloErrores=1, ?limit= y ?offset= para paginar.
+   *
+   * El tope era 100 por defecto y 500 duro, SIN fechas ni paginación: con el
+   * ritmo real (~43 acciones al día) eso alcanzaba once días escasos, así que
+   * cualquier pregunta sobre "el mes pasado" era imposible de responder. Ahora
+   * el tope es 1.000 por página y se puede recorrer hacia atrás con offset.
+   */
   app.get("/intel/audit", async (req, reply) => {
     if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
     const q = req.query as any;
     const sourceRow = Number(q?.sourceRow);
-    const limit = Math.min(Number(q?.limit) || 100, 500);
+    const limit = Math.min(Math.max(Number(q?.limit) || 100, 1), 1000);
+    const offset = Math.max(Number(q?.offset) || 0, 0);
     const sb = getSupabase();
-    let query = sb.from("fransua_log").select("payload,source_row,created_at").eq("kind", "action_audit").order("created_at", { ascending: false }).limit(limit);
+    let query = sb
+      .from("fransua_log")
+      .select("payload,source_row,created_at")
+      .eq("kind", "action_audit")
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
     if (Number.isFinite(sourceRow)) query = query.eq("source_row", sourceRow);
+    // Las fechas se filtran por created_at (columna indexada), no por
+    // payload.at: son el mismo instante salvo microsegundos.
+    const desde = typeof q?.desde === "string" ? q.desde.trim() : "";
+    const hasta = typeof q?.hasta === "string" ? q.hasta.trim() : "";
+    if (desde) query = query.gte("created_at", desde);
+    if (hasta) query = query.lte("created_at", hasta);
     const { data, error } = await query;
     if (error) return reply.status(502).send({ ok: false, error: error.message });
-    const items = (data ?? []).map((r: any) => ({
+    let items = (data ?? []).map((r: any) => ({
       at: r.payload?.at ?? r.created_at,
       actor: r.payload?.actor ?? "?",
       action: r.payload?.action_type ?? "?",
+      // La etiqueta original (con su fila y su valor); el `action` de arriba es
+      // el tipo normalizado, que es por el que se puede agrupar.
+      label: r.payload?.params?.label ?? null,
       params: r.payload?.params ?? null,
       result: r.payload?.result ?? null,
       sourceRow: r.source_row,
       name: r.payload?.name ?? null,
     }));
-    return { ok: true, items };
+    // Lo que de verdad interesa para buscar defectos: lo que NO salió bien.
+    if (q?.soloErrores === "1" || q?.soloErrores === "true") {
+      items = items.filter((i) => i.result != null && i.result !== "ok");
+    }
+    return { ok: true, items, offset, limit, hayMas: (data ?? []).length === limit };
+  });
+
+  /**
+   * RESUMEN de la auditoría — lo mismo que /intel/audit pero ya contado.
+   *
+   * El rastro llevaba desde julio escribiéndose sin que NADIE lo leyera: el
+   * endpoint de arriba existe y no tenía un solo consumidor. El problema para
+   * conectarlo era el volumen: para saber "en qué se va el día" hay que mirar
+   * miles de filas, y mandarlas al navegador es egress de Supabase para nada
+   * (aquí ya hubo sustos de espacio y de egress). Así que se cuenta aquí.
+   *
+   * ?dias= (por defecto 90). Todo lo horario va en hora de Madrid: si se cuenta
+   * en UTC, el pico del mediodía aparece dos horas antes y la lectura engaña.
+   */
+  app.get("/intel/audit/resumen", async (req, reply) => {
+    if (!brainConfigured()) return reply.status(503).send({ ok: false, error: "brain-not-configured" });
+    const q = req.query as any;
+    const dias = Math.min(Math.max(Number(q?.dias) || 90, 1), 365);
+    const desde = new Date(Date.now() - dias * 86400000).toISOString();
+    const sb = getSupabase();
+
+    // Paginado: Supabase corta en 1.000 por respuesta.
+    const filas: any[] = [];
+    for (let off = 0; off < 20000; off += 1000) {
+      const { data, error } = await sb
+        .from("fransua_log")
+        .select("payload,source_row,created_at")
+        .eq("kind", "action_audit")
+        .gte("created_at", desde)
+        .order("created_at", { ascending: false })
+        .range(off, off + 999);
+      if (error) return reply.status(502).send({ ok: false, error: error.message });
+      filas.push(...(data ?? []));
+      if ((data ?? []).length < 1000) break;
+    }
+
+    /**
+     * El `action_type` histórico NO es una taxonomía: trae dentro el número de
+     * fila, la referencia de celda y el valor escrito («crm set-nombre "Celina"
+     * fila 426»). Por eso 1.000 registros daban 697 «tipos» y agrupar era
+     * imposible. Desde el 22-09-2026 el dashboard lo guarda ya normalizado
+     * (lib/fransua/actionAudit.ts), pero las ~1.900 filas anteriores siguen
+     * sucias y son casi todo el histórico: se normalizan AQUÍ, al leer.
+     *
+     * A propósito no se reescriben las filas viejas: es un histórico y tocarlo
+     * en Supabase no tiene vuelta atrás.
+     */
+    const tipoDeAccion = (label: string): string => {
+      const t = label
+        .replace(/"[^"]*"/g, " ")
+        .replace(/\b(fila|intento)\s+\d+/gi, " ")
+        .replace(/\b[A-Z]{1,2}\d+\b/g, " ")
+        .replace(/[→:(]\s*.*$/, " ")
+        .replace(/\d+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      return t || label.trim() || "(sin tipo)";
+    };
+
+    const cuenta = (xs: string[]): { clave: string; n: number }[] => {
+      const m = new Map<string, number>();
+      for (const x of xs) m.set(x, (m.get(x) ?? 0) + 1);
+      return [...m.entries()].map(([clave, n]) => ({ clave, n })).sort((a, b) => b.n - a.n);
+    };
+    const enMadrid = (iso: string) =>
+      new Intl.DateTimeFormat("es-ES", {
+        timeZone: "Europe/Madrid",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", weekday: "short", hour12: false,
+      }).formatToParts(new Date(iso));
+
+    const tipos: string[] = [];
+    const dOfDia: string[] = [];
+    const horas: string[] = [];
+    const diasSemana: string[] = [];
+    const actores: string[] = [];
+    const leads = new Set<number>();
+    const fallos: any[] = [];
+    let correccionesManuales = 0;
+
+    for (const r of filas) {
+      const p = r.payload ?? {};
+      const at = String(p.at ?? r.created_at);
+      const partes = enMadrid(at);
+      const get = (t: string) => partes.find((x) => x.type === t)?.value ?? "";
+      const tipo = tipoDeAccion(String(p.action_type ?? "?"));
+      tipos.push(tipo);
+      dOfDia.push(`${get("year")}-${get("month")}-${get("day")}`);
+      horas.push(get("hour"));
+      diasSemana.push(get("weekday"));
+      actores.push(String(p.actor ?? "?"));
+      if (r.source_row != null) leads.add(Number(r.source_row));
+      const result = p.result ?? null;
+      if (result != null && result !== "ok") {
+        fallos.push({ at, actor: p.actor ?? "?", action: tipo, result, sourceRow: r.source_row });
+      }
+      // Reescribir a mano un campo que debería haber llegado bien (nombre,
+      // teléfono, email, producto…) no es trabajo: es reparación. Contarlo
+      // aparte es lo que convierte este rastro en un detector de defectos del
+      // flujo de entrada (Zapier/Kajabi/landing).
+      if (/^crm set-(nombre|telefono|email|producto|marca|fecha-entrada)\b/.test(String(p.action_type ?? ""))) {
+        correccionesManuales++;
+      }
+    }
+
+    const fechas = filas.map((r) => String(r.payload?.at ?? r.created_at)).sort();
+    return {
+      ok: true,
+      total: filas.length,
+      dias,
+      primera: fechas[0] ?? null,
+      ultima: fechas[fechas.length - 1] ?? null,
+      diasConActividad: new Set(dOfDia).size,
+      leadsTocados: leads.size,
+      correccionesManuales,
+      porTipo: cuenta(tipos).slice(0, 25),
+      porDia: cuenta(dOfDia).sort((a, b) => a.clave.localeCompare(b.clave)),
+      porHora: cuenta(horas).sort((a, b) => a.clave.localeCompare(b.clave)),
+      porDiaSemana: cuenta(diasSemana),
+      porActor: cuenta(actores),
+      fallos: fallos.slice(0, 50),
+      totalFallos: fallos.length,
+    };
   });
 
   // FRANSUA AGÉNTICO (idea 2b): chat abierto donde Fransua DECIDE qué consultar

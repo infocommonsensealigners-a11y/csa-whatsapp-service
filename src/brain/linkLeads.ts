@@ -8,7 +8,8 @@
  * Dos vías de matching, mismo criterio que el script manual:
  *   1. Teléfono canónico ES (9 díg.) o internacional completo — un teléfono
  *      duplicado en el Sheet SÍ linka a todos los leads que lo comparten
- *      (señal fuerte).
+ *      (señal fuerte). Una persona FUSIONADA en el dashboard puede traer más de
+ *      un número (`telefonosAlt`): cualquiera de ellos casa con ella.
  *   2. Por NOMBRE COMPLETO exacto normalizado, y solo como rescate. Tres cosas
  *      lo vetan, y en este orden: que el teléfono del chat y el del lead se
  *      conozcan y NO coincidan; que la única coincidencia sea el nombre de
@@ -29,6 +30,14 @@ import type Database from "better-sqlite3";
 export interface DatasetLead {
   sourceRow: number;
   telefono?: string;
+  /**
+   * Los OTROS teléfonos de la persona (02-10-2026). El dashboard funde las filas
+   * repetidas del CRM en una sola persona y los números de las filas absorbidas
+   * viajan aquí, como objetos `{ telefono }` (así los tapa el enmascarador del
+   * modo invitado). Sin esto, el chat del segundo número perdía su ficha al
+   * fundirse la fila: caía al rescate por nombre y lo vetaba la barrera 1.
+   */
+  telefonosAlt?: { telefono?: string | null; fila?: number | null }[] | null;
   nombre?: string;
   estado?: { canonical?: string };
 }
@@ -150,21 +159,36 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
   // Índice teléfono → leads (un teléfono puede repetirse en varias filas).
   const byPhone = new Map<string, { sourceRow: number; name: string; estado: string | null }[]>();
   const dirRows: { sourceRow: number; phone: string | null; name: string; estado: string | null }[] = [];
-  /** sourceRow → su clave de teléfono (para saber si un lead YA tiene conversación propia). */
-  const leadPhoneKey = new Map<number, string>();
+  /**
+   * sourceRow → TODAS sus claves de teléfono: el principal y los alternativos de
+   * una persona fusionada. Sirve para saber si un lead YA tiene conversación
+   * propia y para el veto por teléfono discordante. Es un conjunto y no un valor
+   * porque «su teléfono es otro» solo es verdad si no es NINGUNO de los suyos.
+   */
+  const leadPhoneKeys = new Map<number, Set<string>>();
   for (const l of leads) {
-    const phone = phoneKey(l.telefono);
+    // El principal va primero: es el que se guarda en el directorio.
+    const claves = new Set<string>();
+    for (const raw of [l.telefono, ...(l.telefonosAlt ?? []).map((t) => t?.telefono)]) {
+      const k = phoneKey(raw);
+      if (k) claves.add(k);
+    }
+    const phone = claves.values().next().value ?? null;
     const name = (l.nombre ?? "").trim();
     const estado = l.estado?.canonical ?? null;
     // El directorio es la FOTO de las filas de HOY, tengan o no teléfono (ver
     // `clearDir` más abajo): si solo entrasen los leads con teléfono, la fila de
     // uno sin teléfono seguiría enseñando a quien la ocupaba antes.
-    dirRows.push({ sourceRow: l.sourceRow, phone: phone || null, name, estado });
-    if (!phone) continue;
-    leadPhoneKey.set(l.sourceRow, phone);
-    const arr = byPhone.get(phone) ?? [];
-    arr.push({ sourceRow: l.sourceRow, name, estado });
-    byPhone.set(phone, arr);
+    dirRows.push({ sourceRow: l.sourceRow, phone, name, estado });
+    if (claves.size === 0) continue;
+    leadPhoneKeys.set(l.sourceRow, claves);
+    // El conjunto ya quita repetidos: un lead nunca entra dos veces bajo el
+    // mismo número aunque el alternativo repita el principal.
+    for (const k of claves) {
+      const arr = byPhone.get(k) ?? [];
+      arr.push({ sourceRow: l.sourceRow, name, estado });
+      byPhone.set(k, arr);
+    }
   }
 
   // Índices por NOMBRE (para chats sin teléfono) — sobre TODOS los leads con
@@ -250,10 +274,12 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
     const k = chatPhoneKey(c);
     if (k) chatKeys.add(k);
   }
-  /** ¿Este lead ya tiene su propia conversación, casada por teléfono? */
+  /** ¿Este lead ya tiene su propia conversación, casada por CUALQUIERA de sus teléfonos? */
   const yaTieneConversacion = (sourceRow: number): boolean => {
-    const k = leadPhoneKey.get(sourceRow);
-    return !!k && chatKeys.has(k);
+    const claves = leadPhoneKeys.get(sourceRow);
+    if (!claves) return false;
+    for (const k of claves) if (chatKeys.has(k)) return true;
+    return false;
   };
 
   let dirCount = 0,
@@ -316,16 +342,23 @@ export function runLeadLinking(db: Database.Database, leads: DatasetLead[]): Lin
        *
        * Si conocemos los dos teléfonos y NO son el mismo, es otra persona. No
        * hay nombre que valga: eso no se decide, se veta.
+       *
+       * Con una persona fusionada «su teléfono» son VARIOS: el veto salta solo si
+       * el del chat no es NINGUNO de ellos. Tener dos números no relaja nada —
+       * un tercero desconocido sigue siendo otra persona.
        */
       const claveChat = chatPhoneKey(c);
-      const claveLead = leadPhoneKey.get(m.sourceRow);
-      if (claveChat && claveLead && claveChat !== claveLead) {
+      const clavesLead = leadPhoneKeys.get(m.sourceRow);
+      if (claveChat && clavesLead && !clavesLead.has(claveChat)) {
+        const suyos = [...clavesLead];
         chatsAmbiguousByName++;
         ambiguous.push({
           jid: c.jid,
           display_name: c.display_name,
           candidatos: [
-            `${m.name} (fila ${m.sourceRow}) — NO se casa: su teléfono es ${claveLead} y el de este chat es ${claveChat}`,
+            `${m.name} (fila ${m.sourceRow}) — NO se casa: ${
+              suyos.length === 1 ? `su teléfono es ${suyos[0]}` : `sus teléfonos son ${suyos.join(" y ")}`
+            } y el de este chat es ${claveChat}`,
           ],
         });
         return false;

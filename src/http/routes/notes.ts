@@ -390,19 +390,26 @@ export function registerNoteRoutes(app: FastifyInstance): void {
     const sourceRow = Number.isFinite(body.sourceRow) ? Number(body.sourceRow) : null;
     const actor = actorFrom(req, body.author);
     const evento = body.evento || "estado";
-    const { error } = await sb.from("fransua_log").insert({
-      kind: "event",
-      source_row: sourceRow,
-      payload: {
-        at: new Date().toISOString(),
-        author: actor,
-        evento,
-        text,
-        phone: canonPhone(body.phone) || null,
-        jid: body.jid ?? null,
-        name: body.name ?? null,
+    // Con el teléfono también en la columna `phone`, como las notas (identidad
+    // estable: la fila se desplaza al borrar filas de la hoja).
+    const { error } = await insertConPhone(
+      sb,
+      "fransua_log",
+      {
+        kind: "event",
+        source_row: sourceRow,
+        payload: {
+          at: new Date().toISOString(),
+          author: actor,
+          evento,
+          text,
+          phone: canonPhone(body.phone) || null,
+          jid: body.jid ?? null,
+          name: body.name ?? null,
+        },
       },
-    });
+      canonPhone(body.phone) || null
+    );
     if (error) return reply.status(502).send({ ok: false, error: error.message });
     // AUDITORÍA: el evento (p.ej. cambio de estado hecho desde el dashboard) es una
     // acción → queda también en el rastro de acciones, con el actor real.

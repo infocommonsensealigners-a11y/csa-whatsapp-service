@@ -10,6 +10,7 @@
  * el dashboard) — con fallback a "Fran" si no llega.
  */
 import { getSupabase } from "./supabase";
+import { insertConPhone } from "./phoneColumn";
 
 export interface ActionAuditEntry {
   actor: string;
@@ -25,11 +26,19 @@ export interface ActionAuditEntry {
 export async function logActionAudit(entry: ActionAuditEntry): Promise<void> {
   try {
     const sb = getSupabase();
-    await sb.from("fransua_log").insert({
-      kind: "action_audit",
-      source_row: entry.sourceRow ?? null,
-      payload: { at: new Date().toISOString(), ...entry },
-    });
+    // El teléfono va TAMBIÉN en la columna `phone` (05-10-2026): la fila es
+    // posicional y, tras borrar filas de la hoja, 2.099 de 2.297 entradas de este
+    // rastro no tenían otro dato con el que saber de quién eran.
+    await insertConPhone(
+      sb,
+      "fransua_log",
+      {
+        kind: "action_audit",
+        source_row: entry.sourceRow ?? null,
+        payload: { at: new Date().toISOString(), ...entry },
+      },
+      entry.phone
+    );
   } catch (e) {
     console.warn("[audit] no se pudo registrar la acción:", (e as Error)?.message ?? e);
   }

@@ -102,7 +102,7 @@ function canon(raw: unknown): string | null {
  * con prefijo de país, y el match exige igualdad exacta (misma longitud y mismo
  * prefijo), que es tan fuerte como el ES y no puede confundir dos países.
  */
-function phoneKey(raw: unknown): string | null {
+export function phoneKey(raw: unknown): string | null {
   const es = canon(raw);
   if (es) return es;
   let d = String(raw ?? "").replace(/\D/g, "");
@@ -124,7 +124,7 @@ function chatPhoneKey(c: { jid: string; phone: string | null }): string | null {
 }
 
 /** Nombre normalizado para comparar: sin acentos/mayúsculas/emoji/puntuación, espacios colapsados. */
-function normName(raw: unknown): string {
+export function normName(raw: unknown): string {
   return String(raw ?? "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "") // acentos (tras NFD, marcas combinantes)

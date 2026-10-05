@@ -12,9 +12,11 @@
  * ensureClaudeAuth en src/brain/secrets.ts).
  */
 import { config } from "../config";
-import { getDb, setMeta } from "../db/db";
+import { getDb, getMeta, setMeta } from "../db/db";
 import { runLeadLinking, type DatasetLead, type NoMatchChat } from "./linkLeads";
-import { desvincularEnIntel } from "./intelDesvincular";
+import { aplicarCambiosIntel, desvincularEnIntel } from "./intelDesvincular";
+import { planIntelDesdeVinculos, reapuntarVinculosManuales } from "./reapuntarVinculos";
+import { brainConfigured, getSupabase } from "./supabase";
 
 const DASH_URL = process.env.DASH_URL ?? "http://localhost:3210";
 const DASH_EMAIL = process.env.DASH_EMAIL;
@@ -28,7 +30,27 @@ const MAX_LEAD_CREATE_PER_TICK = 20;
 /** Key de `meta` donde se persiste la última lista de ambiguos (leída por src/http/routes/linkLeads.ts). */
 export const AMBIGUOUS_META_KEY = "link_leads_ambiguous";
 
-async function fetchLeads(): Promise<DatasetLead[] | null> {
+/**
+ * Key de `meta`: la versión de filas de la hoja (`dataset.fusion.filasVersion`,
+ * sube cada vez que el dashboard BORRA filas) con la que se dejó al día por
+ * última vez la copia de los vínculos en `chat_intel`. Mientras no cambie, esa
+ * copia no se vuelve a repasar entera.
+ */
+const INTEL_SYNC_META_KEY = "link_leads_intel_sync_filas_version";
+
+/** Los leads de la última pasada, para las rutas que miden los vínculos manuales sin volver a pedir el dataset. */
+let ultimosLeads: DatasetLead[] | null = null;
+export function getUltimosLeads(): DatasetLead[] | null {
+  return ultimosLeads;
+}
+
+interface FotoCrm {
+  leads: DatasetLead[];
+  /** `null` si el dashboard aún no la manda (versión anterior). */
+  filasVersion: number | null;
+}
+
+async function fetchLeads(): Promise<FotoCrm | null> {
   const login = await fetch(`${DASH_URL}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -45,8 +67,29 @@ async function fetchLeads(): Promise<DatasetLead[] | null> {
   }
   const ds = (await (await fetch(`${DASH_URL}/api/dataset`, { headers: { cookie } })).json()) as {
     csaLeads?: DatasetLead[];
+    fusion?: { filasVersion?: number } | null;
   };
-  return ds.csaLeads ?? [];
+  const fv = Number(ds.fusion?.filasVersion);
+  return { leads: ds.csaLeads ?? [], filasVersion: Number.isInteger(fv) && fv >= 0 ? fv : null };
+}
+
+/**
+ * Deja `chat_intel.source_row` como dicen los vínculos de hoy. Lee de Supabase
+ * SOLO dos columnas (jid y fila, unos 70 KB): la foto grande de `intelCache`
+ * cuesta ~2 MB de egress y no se trae para esto.
+ */
+async function sincronizarIntel(): Promise<{ hechos: number; pendientes: number } | null> {
+  if (!brainConfigured()) return null;
+  const sb = getSupabase();
+  const intel: { jid: string; source_row: number | null }[] = [];
+  const PAGE = 1000; // PostgREST corta en 1.000 por respuesta
+  for (let desde = 0; desde < 20_000; desde += PAGE) {
+    const { data, error } = await sb.from("chat_intel").select("jid,source_row").order("jid", { ascending: true }).range(desde, desde + PAGE - 1);
+    if (error) throw new Error(error.message);
+    intel.push(...((data ?? []) as { jid: string; source_row: number | null }[]));
+    if ((data ?? []).length < PAGE) break;
+  }
+  return aplicarCambiosIntel(planIntelDesdeVinculos(getDb(), intel));
 }
 
 /**
@@ -113,8 +156,10 @@ async function tryCreateNewLeads(noMatch: NoMatchChat[]): Promise<void> {
 }
 
 async function tick(): Promise<void> {
-  const leads = await fetchLeads();
-  if (!leads) return;
+  const foto = await fetchLeads();
+  if (!foto) return;
+  const { leads, filasVersion } = foto;
+  ultimosLeads = leads;
   const r = runLeadLinking(getDb(), leads);
   console.log(
     `[link-leads] auto: ${r.linkCount} enlaces activos (${r.chatsLinkedByName} por nombre), ` +
@@ -139,6 +184,49 @@ async function tick(): Promise<void> {
       `[link-leads] copia en chat_intel: ${limpiadas} de ${r.removedPairs.length} desvinculada(s) en Supabase.`
     );
   }
+  /**
+   * ⚠️ LOS VÍNCULOS MANUALES (05-10-2026). `runLeadLinking` no los toca, así que
+   * cuando se borran filas de la hoja se quedan señalando a la persona de la fila
+   * de al lado. Aquí se comprueban contra la instantánea que guardan (teléfono y
+   * nombre del lead) y se mueven los que se han quedado atrás. Ver reapuntarVinculos.ts.
+   */
+  let movidos = 0;
+  try {
+    // `LINK_MANUAL_REAPUNTAR=off` lo deja en solo medir (se sigue viendo en el log y en GET /link-leads/manuales).
+    const v = reapuntarVinculosManuales(getDb(), leads, { aplicar: process.env.LINK_MANUAL_REAPUNTAR !== "off" });
+    movidos = v.movedPairs.length;
+    if (v.total > 0 && (movidos > 0 || v.revisar > 0 || v.sinInstantanea > 0)) {
+      console.log(
+        `[link-leads] vínculos manuales: ${v.total} · movidos a su fila de hoy: ${movidos} · ` +
+          `para revisar a mano: ${v.revisar} · sin instantánea (no comprobables): ${v.sinInstantanea}.`
+      );
+    }
+  } catch (e) {
+    console.error("[link-leads] reapuntarVinculosManuales falló:", (e as Error).message);
+  }
+
+  /**
+   * Y la COPIA en `chat_intel`, entera, cuando las filas se han movido: al
+   * cambiar `filasVersion` (el dashboard ha borrado filas), al moverse un vínculo
+   * manual, o si la pasada anterior dejó cambios sin hacer. Solo con una pasada
+   * que ha enlazado algo: con la base de vínculos vacía «lo que dicen los
+   * vínculos» sería quitarle la fila a todos los chats.
+   */
+  const versionHecha = getMeta(INTEL_SYNC_META_KEY);
+  const versionAhora = filasVersion == null ? "sin-version" : String(filasVersion);
+  if (r.linkCount > 0 && (movidos > 0 || versionHecha !== versionAhora)) {
+    try {
+      const s = await sincronizarIntel();
+      if (s) {
+        console.log(`[link-leads] copia en chat_intel puesta al día: ${s.hechos} fila(s) reapuntadas, ${s.pendientes} para la próxima pasada.`);
+        // Solo se da por hecha cuando no queda nada: si no, la siguiente pasada continúa.
+        if (s.pendientes === 0) setMeta(INTEL_SYNC_META_KEY, versionAhora);
+      }
+    } catch (e) {
+      console.error("[link-leads] sincronizarIntel falló:", (e as Error).message);
+    }
+  }
+
   // Persistido para que GET /link-leads/ambiguous (rutas HTTP) lo sirva sin
   // tener que re-ejecutar el matching completo en cada petición.
   setMeta(AMBIGUOUS_META_KEY, JSON.stringify(r.ambiguous));

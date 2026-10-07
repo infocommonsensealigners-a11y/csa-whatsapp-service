@@ -89,6 +89,11 @@ esperar("«interés bajo o no cualifica» → su sección", primera("interés ba
 esperar("«qué mando antes de la llamada» → entre la reserva y la llamada", primera("qué mando antes de la llamada"), "Entre la reserva y la llamada: qué mandar antes");
 esperar("«urgencia» → urgencia honesta", primera("urgencia"), "Urgencia honesta");
 esperar("«guion de la llamada» → pasos de acuerdo", primera("guion de la llamada"), "Pasos de acuerdo: guion de la llamada");
+// Secciones de Sales Mastery y Messaging Mastery (07-10-2026).
+esperar("«lo ve con su socio» → objeciones de aplazamiento", primera("el doctor dice que lo ve con su socio"), "Objeciones de aplazamiento: socio, asesor, congreso, «más adelante»");
+esperar("«primer contacto» → fase 0", primera("cómo hago el primer contacto"), "Primer contacto con un doctor (fase 0, primeras 24 h)");
+esperar("«qué pregunto si duda en la llamada» → la llamada", primera("qué pregunto si el doctor duda en la llamada"), "La llamada: qué preguntar cuando el doctor duda");
+esperar("«hablar con el Dr. Lozano» → objeciones de confianza", primera("puedo hablar con el Dr. Lozano"), "Objeciones de confianza: el Dr. Lozano, por qué CSA y garantías");
 esperar("la línea de temas del prompt nombra el documento", temasConocimiento().startsWith("Ventas B2B y marca personal de CSA"), true);
 
 console.log(`\n${fallos === 0 ? "✓ TODO OK" : `✗ ${fallos} FALLOS`}`);

@@ -77,6 +77,8 @@ for (const f of ficheros) {
   const texto = fs.readFileSync(path.join(CARPETA, f), "utf-8");
   const largas = texto.split(/\n(?=## )/).filter((s) => s.length > 1500).map((s) => s.split("\n")[0]);
   esperar(`${f}: ninguna sección pasa de 1.500 caracteres`, largas, []);
+  // El `#` va en el título de cada resultado: es la fuente que Fransua cita al ofrecerlo («según Haynes…»).
+  esperar(`${f}: empieza por un título # que nombra la fuente`, /^# \S/.test(texto), true);
   // Precios y financiación salen SOLO del catálogo: un importe aquí acabaría en boca de Fransua.
   esperar(`${f}: sin importes ni cuotas`, /€|\d+[.,]\d{2}\s*(€|eur)|\bcuotas?\b/i.test(texto), false);
 }
@@ -90,7 +92,7 @@ esperar("«qué mando antes de la llamada» → entre la reserva y la llamada", 
 esperar("«urgencia» → urgencia honesta", primera("urgencia"), "Urgencia honesta");
 esperar("«guion de la llamada» → pasos de acuerdo", primera("guion de la llamada"), "Pasos de acuerdo: guion de la llamada");
 // Secciones de Sales Mastery y Messaging Mastery (07-10-2026).
-esperar("«lo ve con su socio» → objeciones de aplazamiento", primera("el doctor dice que lo ve con su socio"), "Objeciones de aplazamiento: socio, asesor, congreso, «más adelante»");
+esperar("«lo ve con su socio» → objeciones de aplazamiento", primera("el doctor dice que lo ve con su socio"), "Objeciones de aplazamiento del doctor: socio, asesor, congreso, «más adelante»");
 esperar("«primer contacto» → fase 0", primera("cómo hago el primer contacto"), "Primer contacto con un doctor (fase 0, primeras 24 h)");
 esperar("«qué pregunto si duda en la llamada» → la llamada", primera("qué pregunto si el doctor duda en la llamada"), "La llamada: qué preguntar cuando el doctor duda");
 esperar("«hablar con el Dr. Lozano» → objeciones de confianza", primera("puedo hablar con el Dr. Lozano"), "Objeciones de confianza: el Dr. Lozano, por qué CSA y garantías");

@@ -767,7 +767,7 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       'gastos → {"tab":"financiero","finView":"gastos"}. Nunca la combines con [[VISTA_CRM]] en la misma respuesta.',
       "",
       informes,
-      temasConocimiento() ? `PLAYBOOK DE VENTAS — consultar_conocimiento(consulta) te da, por secciones, cómo vender y tratar a un doctor según el método Haynes adaptado a CSA (úsalo para «¿cómo hago…?», «¿qué le mando…?» o para redactar un borrador). Temas: ${temasConocimiento()}` : "",
+      temasConocimiento() ? `CONOCIMIENTO DE APOYO — consultar_conocimiento(consulta) te da, por secciones, otras formas de vender y tratar a un doctor (hoy, el método de Jeremy Haynes). COMPLEMENTA lo que CSA ya hace, no lo corrige: lo que manda es la estrategia y las reglas de CSA. Cuando ofrezcas algo de ahí, di siempre de dónde viene («según Haynes…»). Úsalo para «¿cómo hago…?», «¿qué le mando…?» o para redactar un borrador. Temas: ${temasConocimiento()}` : "",
       "",
       lecciones,
       "",

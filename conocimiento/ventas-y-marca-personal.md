@@ -1,4 +1,4 @@
-# Ventas B2B y marca personal de CSA, para Fransua
+# Ventas B2B y marca personal de CSA según Jeremy Haynes, para Fransua
 
 Lo que Fransua debe saber para ayudar a Fran y al equipo comercial a vender formación a dentistas.
 Destilado del método de Jeremy Haynes (Personal Brand University, Creating Info Products, Call Funnel
@@ -6,9 +6,11 @@ Mastery, Backend Selling Systems, Funnel Building, Sales Mastery, Messaging Mast
 mercado), adaptado a CSA.
 
 Reglas para leer esto:
+- Esto complementa a Fransua: es otra forma de hacer las cosas, la de Jeremy Haynes. No corrige lo que CSA ya hace.
+- Lo que manda es lo que hay: el CEREBRO-ESTRATÉGICO (ventana de 21 días, hitos llamada → propuesta → decisión, criterio de «No cualifica») y las reglas comerciales de CSA. Si aquí se propone otra cosa, no es un error: es una alternativa.
+- Cuando Fransua ofrezca algo de aquí, lo dice con su fuente («según Haynes…»), para que Fran sepa que es otra forma de hacerlo y no lo que CSA hace hoy.
 - Fransua es el asistente interno de Fran: sugiere, resume, prioriza y propone; no escribe a los doctores.
 - Aquí no hay precios ni condiciones de financiación: salen solo del catálogo y de los datos de cada programa.
-- Si algo choca con el CEREBRO-ESTRATÉGICO (ventana de 21 días, hitos llamada → propuesta → decisión, criterio de «No cualifica»), manda el CEREBRO.
 - Las cifras de Haynes son de Estados Unidos y no son objetivos de CSA; aquí no aparecen.
 - Lo marcado «(criterio CSA)» es interpretación nuestra, no de Haynes.
 
@@ -73,26 +75,25 @@ Reglas para leer esto:
 
 ## Primer contacto con un doctor (fase 0, primeras 24 h)
 
-- Es la fase 0 de la ventana de 21 días: llegar rápido al doctor y decidir si cualifica.
-- De inmediato, un WhatsApp de Fran con su nombre y una llamada; si no contesta, un segundo intento seguido. Los siguientes intentos de llamada van los días 2 y 4, con WhatsApp entre medias.
-- El primer mensaje nunca es de sí o no: da a elegir entre dos franjas concretas para llamar hoy o que escriba su duda («¿te llamo a las 13:00 o a las 17:30, o prefieres escribirme tu duda?»).
+Según Haynes (Sales Mastery y Messaging Mastery):
+- De inmediato: mensaje con el nombre de Fran y una llamada; si no contesta, segunda llamada seguida y después todo por texto.
+- El primer mensaje da tres opciones y nunca es de sí o no: «te llamo ahora, esta tarde o me escribes tu duda».
 - Se trabajan todos los formularios, no solo los que agendan.
-- El perfil se cualifica en las primeras 24 horas: si es dentista o clínica y si trabaja Invisalign.
-- Si no cualifica, salida limpia, con motivo y buen trato; como mucho, un recurso gratuito que le sirva, sin insistir con la venta. Quien cualifica aporta valor, no solo filtra.
-- Si el doctor quiere algo antes de la llamada, contacto acotado: «tengo cinco minutos, dime tu duda clave y te mando material».
-- Fransua puede redactar el borrador del primer mensaje; Fran lo revisa y lo envía.
+- El perfil se cualifica en las primeras 24 horas.
+- Si no cualifica, se le trata bien y se le ofrece una alternativa: quien cualifica aporta valor, no solo filtra.
+- Contacto previo acotado: «tengo cinco minutos, dime tu duda clave y te mando material».
 
 ## Entre la reserva y la llamada: qué mandar antes
 
 - El interés del doctor es máximo al reservar y se enfría si no recibe nada útil.
-- Al agendar se «vende» la llamada: qué pasará, qué se lleva el doctor y por qué merece la pena.
 - Nada más agendar, el comercial manda un mensaje personal o un vídeo selfie con dos recursos a elegir y «¿qué duda te impediría venir a la llamada?».
-- La víspera, un vídeo selfie o una nota de voz en lugar de un recordatorio genérico: el contacto humano pesa más que el automático.
-- Fransua puede redactar el borrador de esos mensajes citando lo que el doctor respondió en el formulario.
-- Los entregables pildora_lozano y prueba_social del CEREBRO responden cada uno a una duda concreta del doctor: se mandan por esa duda.
+- Ese contacto humano pesa más que los recordatorios automáticos.
+- Fransua puede redactar el borrador de ese mensaje citando lo que el doctor respondió en el formulario.
 - Página de confirmación con un vídeo del Dr. Lozano tipo «due diligence»: a quién sirve cada programa, a quién no y qué pasa en la llamada.
 - Vídeos cortos que responden las dudas que el equipo repite y casos de alumnos parecidos al doctor.
 - La página dice la verdad: la llamada es con el equipo comercial, no con el Dr. Lozano.
+- Al agendar se «vende» la llamada: qué pasará, qué se lleva el doctor y por qué merece la pena; la víspera, un vídeo selfie o una nota de voz en lugar de un recordatorio genérico.
+- Las entregas pildora_lozano y prueba_social del CEREBRO responden cada una a una duda concreta del doctor.
 
 ## Los cuatro cuadrantes y la biblioteca de recursos
 
@@ -105,34 +106,31 @@ Reglas para leer esto:
 
 ## La llamada: qué preguntar cuando el doctor duda
 
-- La llamada sirve para cualificar y asegurar la propuesta, que sale en ≤ 48 h.
+Según Haynes (Sales Mastery), las preguntas que sacan la objeción real:
 - Encuadre al inicio: «soy directo; dime si algo no te cuadra».
 - Tras cada punto sensible, «¿qué te parece?».
-- Ante una respuesta tibia, una segunda pregunta abierta y amable: «¿qué es lo que no terminas de ver?».
-- Si hay reticencia real, la pregunta de transparencia («¿qué te frena de verdad?») o la escala del uno al diez («¿cómo lo ves del uno al diez y qué faltaría para subir?»). Solo entonces: usadas por sistema se vuelven presión.
-- Ante un «no», la objeción real o descalificar; nunca repetir el mismo mensaje.
+- Ante una respuesta tibia, una segunda pregunta abierta y amable.
+- Si hay reticencia real, la pregunta de transparencia o la escala del uno al diez; usadas por sistema se vuelven presión.
 - El valor se explica con analogías, sin discutir.
 - Confianza baja no es lead frío: lo que más acelera es hablar con antiguos alumnos, con su consentimiento, y contar con honestidad los casos que no funcionaron.
 - Antes de colgar, fecha de decisión pactada.
-- Cada llamada debería marcarse como «venta» o «educación»: es el indicador temprano de si el material previo funciona. Hoy el CRM no lo registra: Fransua lo deduce y lo presenta como deducción.
+- Cada llamada se marca como «venta» o «educación»: es el indicador temprano de si el material previo funciona.
 
 ## Objeciones de confianza: el Dr. Lozano, por qué CSA y garantías
 
-- Mandan las respuestas validadas del CEREBRO (horario de las sesiones en vivo, nivel, otro sistema de alineadores). Para las objeciones con citas reales, la herramienta objeciones_doctores.
-- «¿Puedo hablar con el Dr. Lozano?»: «claro, es quien te va a revisar los casos», y preguntarle qué quiere preguntarle. La llamada sigue siendo con el equipo comercial.
-- Invitar a ese doctor a una sesión en vivo: PENDIENTE de confirmar con dirección si un no alumno puede entrar; hasta entonces no se ofrece.
-- Lo que sí se ha hecho y funcionó: mandar como muestra una sesión grupal grabada de revisión de casos y dejar que juzgue él.
-- «¿Por qué vosotros?»: el diferencial real (mentoría directa del Dr. Lozano, revisión de casos, sesiones en vivo, estancia presencial) conectado con su situación; nunca hablar mal de la competencia.
-- «¿Me garantizas que ganaré dinero?»: no. Lo que incluye es formación, mentoría y revisión de casos, y el resultado depende de aplicarlo. Se habla de casos, nunca de ingresos.
+Según Haynes (Sales Mastery):
+- «¿Puedo hablar con el Dr. Lozano?»: «claro, es quien te va a revisar los casos»; proponer una sesión en vivo y preguntar qué quiere preguntarle. PENDIENTE de confirmar con dirección si un no alumno puede entrar: hasta entonces la sesión en vivo no se ofrece.
+- «¿Por qué vosotros?»: el diferencial real (mentoría directa, revisión de casos, sesiones en vivo, estancia) conectado con su situación; nunca hablar mal de la competencia.
+- «¿Me garantizas que ganaré dinero?»: no; se garantiza formación, mentoría y revisión, y el resultado depende de aplicarlo.
+- Las respuestas validadas del CEREBRO (horario de las sesiones, nivel, otro sistema de alineadores) mandan sobre estas.
 
-## Objeciones de aplazamiento: socio, asesor, congreso, «más adelante»
+## Objeciones de aplazamiento del doctor: socio, asesor, congreso, «más adelante»
 
-- Regla del CEREBRO: ningún contacto se cierra sin próximo paso con fecha.
-- «Lo veo con mi socio»: mejor preguntarlo al cualificar e invitar al socio a la llamada; si sale al final, llamada corta a tres con fecha. Si el socio pide retorno, se habla de los casos que hoy deriva o no trata, nunca de ingresos.
-- «Lo ve mi asesor»: «¿qué día lo habrá mirado?» y llamada con fecha; se le ofrece la documentación que pida.
-- «Mejor más adelante»: primero «¿qué tendría que cambiar para verlo claro?»; si es calendario real, «Futuro» con fecha pactada.
+Según Haynes (Sales Mastery):
+- «Lo ve mi asesor»: «¿qué día lo habrá mirado?» y llamada con fecha; ofrecer la documentación que pida.
+- «Mejor más adelante»: primero «¿qué tendría que cambiar para verlo claro?»; si es calendario real, futuro con fecha.
 - «Estoy de congreso»: «¿qué día vuelves?» y llamada con un día de margen.
-- Lo que no funciona: aceptar «lo hablo y te digo» sin ofrecer hablar con quien decide ni fijar fecha.
+- «Lo veo con mi socio»: preguntarlo al cualificar e invitarle; si sale al final, llamada corta a tres con fecha.
 
 ## Doctor tipo 1 y tipo 2
 
@@ -163,22 +161,25 @@ Reglas para leer esto:
 
 - La propuesta sale en ≤ 48 h tras la llamada y con la fecha de decisión pactada antes de colgar.
 - Cada llamada sin cierre debería llevar un motivo de no cierre elegido de una lista. Hoy el CRM no lo registra (la lista está por decidir): Fransua lo deduce de la conversación y lo presenta como deducción.
-- El motivo dispara un seguimiento que aporta valor sobre su duda (un caso, un fragmento de mentoría del Dr. Lozano, el minuto concreto de una charla), nunca «¿cómo lo llevas?» ni «¿lo has pensado?».
-- Si un recurso no mueve la decisión, no tocaba la objeción real: se cambia de recurso.
+- El motivo dispara un seguimiento contextual: información sobre su duda, no un «¿cómo lo llevas?».
 - Al doctor indeciso le llega un vídeo personal, grabado con el contexto que da el comercial.
 - Testimonios de colegas uno a uno, elegidos para la objeción concreta.
 - Nunca se cierra un contacto sin próximo paso con fecha.
 - Para validar la ventana de 21 días hay que medir el ciclo real (fecha de entrada frente a fecha de compra). Hoy la fecha de compra no se registra en el CRM: es un dato pendiente, no se inventa.
 - Fransua puede agrupar los motivos de no cierre cada mes y proponer contenido o ajustes.
+- Según Haynes, el seguimiento aporta valor (casos, fragmentos de mentoría del doctor, el minuto concreto de una charla), nunca «¿lo has pensado?».
+- Según Haynes, una persona hace de «cleaner»: responsable de los doctores que salen de la ventana sin decisión, sin descuentos improvisados.
+- Según Haynes, si un recurso no mueve la decisión, no tocaba la objeción real: se cambia de recurso.
 
 ## El equipo comercial
 
+Según Haynes (Sales Mastery):
 - Formación diaria repitiendo lo que ya funciona: el comercial se guía por lo último que ha vivido.
-- Una métrica principal por puesto, vigilada por tendencia; las de proceso y resultado están en el CEREBRO.
+- Una métrica principal por puesto, vigilada por tendencia.
 - Si el equipo dice que «los leads son malos», se contrasta con datos y se arregla lo que falle; nunca se le miente para motivarlo.
-- Si una de las tres tareas de Fran (agendadas, nuevos, seguimiento) se resiente, se puede plantear separar quien cualifica de quien cierra; lo decide dirección.
-- Alguien hace de «cleaner»: responde de los doctores que llegan al día 21 sin decisión y les cierra la salida (compra, futuro con fecha o «No interesa» con motivo), sin descuentos improvisados: las excepciones las decide Fran con dirección.
+- Cuando una de las tres tareas de Fran (agendadas, nuevos, seguimiento) falla, se separa quien cualifica de quien cierra.
 - El sistema se documenta (grabaciones, guion, objeciones, ventana de 21 días) antes de ampliar el equipo.
+- Fransua avisa si sube el porcentaje de «No cualifica»: puede ser el anuncio o el formulario.
 
 ## Lo que Fransua puede hacer con esto
 
@@ -192,12 +193,12 @@ Reglas para leer esto:
 ## Lo que CSA no hace
 
 - Escasez o urgencia falsas, contadores que se reinician o subidas de precio que no van a ocurrir.
-- Regalos que «se retiran» si no decide rápido cuando no es verdad; la promo real con fecha límite real sí vale.
+- Regalos falsos que se retiran si no decide rápido.
 - Seis correos al día: las comunicaciones comerciales necesitan base legal y baja fácil (LSSI y RGPD).
 - Preguntas de solvencia camufladas o datos de crédito comprados a terceros.
 - Precios inflados para aparentar descuento.
 - Fingir un directo o decir que la llamada es con el doctor cuando es con el equipo.
-- Responder «¿y si cerráis?» quitándole importancia en lugar de con una respuesta veraz.
+- Responder «¿y si cerráis?» minimizando el riesgo en lugar de dar una respuesta veraz.
 - Sembrar comentarios, comprar reseñas o incentivarlas sin declararlo.
 - Prometer ingresos al doctor: se vende habilidad, no facturación.
 
@@ -205,7 +206,7 @@ Reglas para leer esto:
 
 - El claim paraguas y los rasgos del yo digital del Dr. Lozano.
 - Qué se regala, qué se vende y qué se ofrece después en la escalera de programas.
-- La lista de motivos de no cierre del CRM y la marca «venta» o «educación» de cada llamada.
+- La lista de motivos de no cierre del CRM.
 - Si un doctor que aún no es alumno puede entrar a una sesión en vivo (objeción «¿Puedo hablar con el Dr. Lozano?»).
 - Las preguntas del formulario de solicitud.
 - El presupuesto mensual para distribuir contenido.

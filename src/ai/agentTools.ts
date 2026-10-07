@@ -450,12 +450,17 @@ const objecionesClinicas = tool(
 
 /**
  * CONOCIMIENTO DE VENTAS (07-10-2026): el playbook de ventas B2B y marca
- * personal (método Haynes adaptado a CSA) vive en `conocimiento/*.md` y se sirve
- * por secciones, no entero en el prompt. Ver `src/brain/conocimiento.ts`.
+ * personal (método Haynes) vive en `conocimiento/*.md` y se sirve por secciones,
+ * no entero en el prompt. Ver `src/brain/conocimiento.ts`.
+ *
+ * Decisión del usuario (07-10-2026): lo que entra aquí COMPLEMENTA a Fransua, no
+ * se corrige contra la estrategia. Lo que manda es lo que CSA ya hace; esto es
+ * otra forma de hacerlo y Fransua la ofrece citando su fuente (el título de cada
+ * documento la nombra). Vale para cualquier conocimiento que se añada después.
  */
 const consultarConocimiento = tool(
   "consultar_conocimiento",
-  "El PLAYBOOK de ventas B2B y marca personal de CSA (método de Jeremy Haynes adaptado a CSA; la marca personal es la del Dr. Javier Lozano): marca y autoridad, contenido, guion de la llamada por pasos de acuerdo, formulario y agenda, qué mandar entre la reserva y la llamada, doctor tipo 1/tipo 2 (vio o no vio los vídeos), «No cualifica» frente a «interés bajo», urgencia honesta, seguimiento tras la llamada por motivo y lo que CSA no hace. Úsala cuando Fran pregunte CÓMO vender o tratar a un doctor en una situación así, o te pida un borrador de mensaje previo o de seguimiento. Devuelve las secciones que mejor contestan. Es guía para Fran, no texto para mandar tal cual a un doctor.",
+  "CONOCIMIENTO DE APOYO: otras formas de vender, hoy el método de Jeremy Haynes aplicado a CSA (la marca personal es la del Dr. Javier Lozano): marca y autoridad, contenido, guion de la llamada por pasos de acuerdo, formulario y agenda, primer contacto (fase 0), qué mandar entre la reserva y la llamada, preguntas cuando el doctor duda, objeciones (Dr. Lozano, socio, asesor, congreso, «más adelante»), doctor tipo 1/tipo 2, «No cualifica» frente a «interés bajo», urgencia honesta, seguimiento tras la llamada, equipo comercial y lo que CSA no hace. Úsala cuando Fran pregunte CÓMO vender o tratar a un doctor en una situación así, o te pida un borrador de mensaje previo o de seguimiento. Complementa lo que CSA ya hace, no lo sustituye: cuando lo ofrezcas, di de dónde viene («según Haynes…»). Es guía para Fran, no texto para mandar tal cual a un doctor.",
   {
     consulta: z
       .string()
@@ -469,7 +474,7 @@ const consultarConocimiento = tool(
     }
     return txt(
       r.map((s) => `### ${s.titulo}\n${s.texto}`).join("\n\n") +
-        "\n\nRecuerda: aquí no hay precios ni financiación (solo del CATÁLOGO del prompt), y si algo choca con la ESTRATEGIA COMERCIAL de CSA, manda la estrategia. Tú sugieres y redactas borradores; Fran revisa y envía."
+        "\n\nRecuerda: esto COMPLEMENTA lo que CSA ya hace. Lo que manda es la ESTRATEGIA COMERCIAL de CSA; si aquí se propone otra cosa, ofrécela como otra forma de hacerlo y cita SIEMPRE la fuente que nombra el título («según Haynes…»), sin presentarla como lo que CSA hace hoy. Aquí no hay precios ni financiación (solo del CATÁLOGO del prompt). Tú sugieres y redactas borradores; Fran revisa y envía."
     );
   }
 );

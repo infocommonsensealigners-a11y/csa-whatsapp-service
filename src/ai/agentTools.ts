@@ -31,6 +31,7 @@ import { storeLeccion } from "../brain/lecciones";
 import { getDb } from "../db/db";
 import { getWaState } from "../wa/socket";
 import { getDireccionesRecogidas } from "../brain/direcciones";
+import { buscarConocimiento, temasConocimiento } from "../brain/conocimientoFuente";
 import {
   avisoConexion,
   direccionesEnChats,
@@ -448,6 +449,32 @@ const objecionesClinicas = tool(
 );
 
 /**
+ * CONOCIMIENTO DE VENTAS (07-10-2026): el playbook de ventas B2B y marca
+ * personal (método Haynes adaptado a CSA) vive en `conocimiento/*.md` y se sirve
+ * por secciones, no entero en el prompt. Ver `src/brain/conocimiento.ts`.
+ */
+const consultarConocimiento = tool(
+  "consultar_conocimiento",
+  "El PLAYBOOK de ventas B2B y marca personal de CSA (método de Jeremy Haynes adaptado a CSA; la marca personal es la del Dr. Javier Lozano): marca y autoridad, contenido, guion de la llamada por pasos de acuerdo, formulario y agenda, qué mandar entre la reserva y la llamada, doctor tipo 1/tipo 2 (vio o no vio los vídeos), «No cualifica» frente a «interés bajo», urgencia honesta, seguimiento tras la llamada por motivo y lo que CSA no hace. Úsala cuando Fran pregunte CÓMO vender o tratar a un doctor en una situación así, o te pida un borrador de mensaje previo o de seguimiento. Devuelve las secciones que mejor contestan. Es guía para Fran, no texto para mandar tal cual a un doctor.",
+  {
+    consulta: z
+      .string()
+      .describe("la situación o el tema con las palabras de Fran, p.ej. 'doctor que no vio los vídeos', 'qué mando antes de la llamada', 'urgencia'"),
+  },
+  async (args: { consulta: string }) => {
+    const r = buscarConocimiento(args.consulta, 3);
+    if (!r.length) {
+      const t = temasConocimiento();
+      return txt(t ? `No encuentro nada sobre eso en el playbook. Temas que cubre: ${t}` : "El playbook de ventas no está disponible ahora mismo. No me lo invento.");
+    }
+    return txt(
+      r.map((s) => `### ${s.titulo}\n${s.texto}`).join("\n\n") +
+        "\n\nRecuerda: aquí no hay precios ni financiación (solo del CATÁLOGO del prompt), y si algo choca con la ESTRATEGIA COMERCIAL de CSA, manda la estrategia. Tú sugieres y redactas borradores; Fran revisa y envía."
+    );
+  }
+);
+
+/**
  * LEER WHATSAPP POR FECHAS (10-09-2026). Fran preguntó «¿las direcciones
  * postales que hemos recogido por WhatsApp desde ayer?» y Fransua contestó que
  * no tenía forma de saberlo: solo veía resúmenes por lead y búsqueda por tema.
@@ -733,6 +760,7 @@ const READ_TOOL_NAMES = [
   "mcp__fransua__objeciones_clinicas",
   "mcp__fransua__direcciones_postales",
   "mcp__fransua__mensajes_whatsapp",
+  "mcp__fransua__consultar_conocimiento",
 ];
 const WRITE_TOOL_NAMES = [
   "mcp__fransua__crear_evento_agenda",
@@ -757,7 +785,7 @@ export async function runAgent(prompt: string, model?: string, actor?: string): 
   const fransuaMcpServer = createSdkMcpServer({
     name: "fransua",
     version: "1.0.0",
-    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, objecionesClinicas, direccionesPostales, mensajesWhatsapp, ...writeTools],
+    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, objecionesClinicas, direccionesPostales, mensajesWhatsapp, consultarConocimiento, ...writeTools],
   });
 
   const q = query({

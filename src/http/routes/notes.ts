@@ -34,6 +34,7 @@ import { runAgent, agentModel } from "../../ai/agentTools";
 import { runLearning } from "../../brain/learning";
 import { getLeccionesTexto, extractAndStoreLessons, listLecciones, storeLeccion } from "../../brain/lecciones";
 import { getInformesTexto } from "../../brain/informesCatalogo";
+import { temasConocimiento } from "../../brain/conocimientoFuente";
 import { logPregunta, listPreguntas } from "../../brain/preguntas";
 import { learnAgendaPlaybook, proposeAgendaEvents, getAgendaPlaybook, getStoredProposals } from "../../brain/agendaPlaybook";
 import type { FastifyRequest } from "fastify";
@@ -766,6 +767,7 @@ export function registerNoteRoutes(app: FastifyInstance): void {
       'gastos → {"tab":"financiero","finView":"gastos"}. Nunca la combines con [[VISTA_CRM]] en la misma respuesta.',
       "",
       informes,
+      temasConocimiento() ? `PLAYBOOK DE VENTAS — consultar_conocimiento(consulta) te da, por secciones, cómo vender y tratar a un doctor según el método Haynes adaptado a CSA (úsalo para «¿cómo hago…?», «¿qué le mando…?» o para redactar un borrador). Temas: ${temasConocimiento()}` : "",
       "",
       lecciones,
       "",

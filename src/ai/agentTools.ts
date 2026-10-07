@@ -460,7 +460,7 @@ const objecionesClinicas = tool(
  */
 const consultarConocimiento = tool(
   "consultar_conocimiento",
-  "CONOCIMIENTO DE APOYO: otras formas de vender, hoy el método de Jeremy Haynes aplicado a CSA (la marca personal es la del Dr. Javier Lozano): marca y autoridad, contenido, guion de la llamada por pasos de acuerdo, formulario y agenda, primer contacto (fase 0), qué mandar entre la reserva y la llamada, preguntas cuando el doctor duda, objeciones (Dr. Lozano, socio, asesor, congreso, «más adelante»), doctor tipo 1/tipo 2, «No cualifica» frente a «interés bajo», urgencia honesta, seguimiento tras la llamada, equipo comercial y lo que CSA no hace. Úsala cuando Fran pregunte CÓMO vender o tratar a un doctor en una situación así, o te pida un borrador de mensaje previo o de seguimiento. Complementa lo que CSA ya hace, no lo sustituye: cuando lo ofrezcas, di de dónde viene («según Haynes…»). Es guía para Fran, no texto para mandar tal cual a un doctor.",
+  "CONOCIMIENTO DE APOYO: otras formas de vender, hoy el método de Jeremy Haynes aplicado a CSA (la marca personal es la del Dr. Javier Lozano): marca y autoridad, contenido, guion de la llamada por pasos de acuerdo, formulario y agenda, primer contacto (fase 0), qué mandar entre la reserva y la llamada, vídeo selfie de Fran, secuencia antes de la llamada, cómo abrir la llamada, la 1.ª llamada de cualificación, preguntas cuando el doctor duda, objeciones por tipo («es mucho dinero», presupuesto, casos) y concretas (Dr. Lozano, socio, asesor, congreso, «más adelante»), masterclass del Dr. Lozano, doctor tipo 1/tipo 2, «No cualifica» frente a «interés bajo», urgencia honesta, seguimiento tras la llamada, equipo comercial, cumplimiento de la publicidad y lo que CSA no hace. Úsala cuando Fran pregunte CÓMO vender o tratar a un doctor en una situación así, o te pida un borrador de mensaje previo o de seguimiento. Complementa lo que CSA ya hace, no lo sustituye: cuando lo ofrezcas, di de dónde viene («según Haynes…»). Es guía para Fran, no texto para mandar tal cual a un doctor.",
   {
     consulta: z
       .string()
@@ -474,7 +474,7 @@ const consultarConocimiento = tool(
     }
     return txt(
       r.map((s) => `### ${s.titulo}\n${s.texto}`).join("\n\n") +
-        "\n\nRecuerda: esto COMPLEMENTA lo que CSA ya hace. Lo que manda es la ESTRATEGIA COMERCIAL de CSA; si aquí se propone otra cosa, ofrécela como otra forma de hacerlo y cita SIEMPRE la fuente que nombra el título («según Haynes…»), sin presentarla como lo que CSA hace hoy. Aquí no hay precios ni financiación (solo del CATÁLOGO del prompt). Tú sugieres y redactas borradores; Fran revisa y envía."
+        "\n\nRecuerda: esto COMPLEMENTA lo que CSA ya hace. Lo que manda es la ESTRATEGIA COMERCIAL de CSA; si aquí se propone otra cosa, ofrécela como otra forma de hacerlo y cita SIEMPRE la fuente que nombra el título («según Haynes…»), sin presentarla como lo que CSA hace hoy. Lo marcado PENDIENTE (de dirección o de la asesoría) no lo propongas: dilo como pendiente. Aquí no hay precios ni financiación (solo del CATÁLOGO del prompt). Tú sugieres y redactas borradores; Fran revisa y envía."
     );
   }
 );

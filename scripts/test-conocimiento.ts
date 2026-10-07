@@ -95,6 +95,12 @@ esperar("«guion de la llamada» → pasos de acuerdo", primera("guion de la lla
 esperar("«lo ve con su socio» → objeciones de aplazamiento", primera("el doctor dice que lo ve con su socio"), "Objeciones de aplazamiento del doctor: socio, asesor, congreso, «más adelante»");
 esperar("«primer contacto» → fase 0", primera("cómo hago el primer contacto"), "Primer contacto con un doctor (fase 0, primeras 24 h)");
 esperar("«qué pregunto si duda en la llamada» → la llamada", primera("qué pregunto si el doctor duda en la llamada"), "La llamada: qué preguntar cuando el doctor duda");
+// v3: Sales Training, Show Rate, Webinar Mastery, Perfect Cold Video Pitch y Ask Jeremy Anything (07-10-2026).
+esperar("«cómo abro la llamada» → abrir la llamada", primera("cómo abro la llamada"), "Cómo abro la llamada: qué necesita ver el doctor");
+esperar("«es mucho dinero» → objeciones por tipo", primera("el doctor dice que es mucho dinero"), "Objeciones por tipo: valor, pago, decisor o información");
+esperar("«vídeo selfie» → vídeo selfie de Fran", primera("qué le digo en el vídeo selfie"), "Vídeo selfie de Fran: tres momentos");
+esperar("«masterclass del Dr. Lozano» → su sección", primera("masterclass del Dr. Lozano"), "Masterclass del Dr. Lozano");
+esperar("«Certificación Invisalign en la publicidad» → cumplimiento", primera("cómo anuncio la Certificación Invisalign en la publicidad"), "Cumplimiento de la publicidad de CSA");
 esperar("«hablar con el Dr. Lozano» → objeciones de confianza", primera("puedo hablar con el Dr. Lozano"), "Objeciones de confianza: el Dr. Lozano, por qué CSA y garantías");
 esperar("la línea de temas del prompt nombra el documento", temasConocimiento().startsWith("Ventas B2B y marca personal de CSA"), true);
 

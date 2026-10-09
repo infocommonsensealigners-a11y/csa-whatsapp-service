@@ -12,6 +12,7 @@
  */
 import { getDb } from "../db/db";
 import { contadoresSignal } from "./silenciarSignal";
+import { ingestaPendiente } from "./ingestCore";
 
 export interface SaludWa {
   /** Ventana de 2 h: entrantes 1-a-1 y cuántos siguen como «esperando…». */
@@ -24,6 +25,8 @@ export interface SaludWa {
   descifradoRoto: boolean;
   /** Contadores de libsignal desde el arranque. */
   signal: Record<string, number>;
+  /** Mensajes que no se pudieron guardar y esperan reintento (debería ser 0). */
+  ingestaApartada: number;
   /** Segundos desde WhatsApp hasta aquí (p50/p95 de los últimos 300 en vivo). */
   latencia: { n: number; p50: number | null; p95: number | null };
 }
@@ -71,6 +74,7 @@ export function saludWa(): SaludWa {
     cifradosPendientes: pend.n,
     descifradoRoto: v2.entrantes >= 5 && cifrados * 2 > v2.entrantes,
     signal: contadoresSignal(),
+    ingestaApartada: ingestaPendiente(),
     latencia: latenciaLlegada(),
   };
   cache = { at: Date.now(), v };

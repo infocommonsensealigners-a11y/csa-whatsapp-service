@@ -445,9 +445,16 @@ export function registerChatRoutes(app: FastifyInstance): void {
 
   app.get("/chats/:jid/messages", async (request) => {
     const jid = jidDeRuta((request.params as { jid: string }).jid);
-    const q = request.query as { beforeTs?: string; limit?: string };
+    const q = request.query as { beforeTs?: string; beforeSeq?: string; limit?: string };
     const limit = Math.min(Number(q.limit) || 50, 200);
     const beforeTs = Number(q.beforeTs) || Number.MAX_SAFE_INTEGER;
+    /**
+     * Cursor (ts, seq) — 09-10-2026. Con solo `ts < beforeTs`, los mensajes que
+     * compartían segundo con el más antiguo de la página se SALTABAN al cargar
+     * más (pasa con ráfagas: «Hola» + «¿qué tal?» en el mismo segundo). `seq`
+     * es el orden de llegada a la base (rowid). Sin `beforeSeq` = como antes.
+     */
+    const beforeSeq = Number(q.beforeSeq) || 0;
     const db = getDb();
 
     const rows = db
@@ -457,13 +464,14 @@ export function registerChatRoutes(app: FastifyInstance): void {
         // descargara (POST /media/:jid/:id/fetch). El raw_json se usa AQUÍ para
         // sacar la cita y los parámetros de sistema; al navegador no viaja.
         // Los borrados «para mí» no se enseñan, como en WhatsApp Web.
-        `SELECT id, chat_jid, from_me, ts, type, text, media_path, participant, status, revoked, edited, stub, raw_json
+        `SELECT rowid AS seq, id, chat_jid, from_me, ts, type, text, media_path, participant, status, revoked, edited, stub, raw_json
          FROM messages
-         WHERE chat_jid = ? AND ts < ? AND deleted_for_me = 0
-         ORDER BY ts DESC
+         WHERE chat_jid = ? AND (ts < ? OR (ts = ? AND rowid < ?)) AND deleted_for_me = 0
+         ORDER BY ts DESC, rowid DESC
          LIMIT ?`
       )
-      .all(jid, beforeTs, limit) as Array<{
+      .all(jid, beforeTs, beforeTs, beforeSeq, limit) as Array<{
+      seq: number;
       id: string;
       chat_jid: string;
       from_me: number;
@@ -549,6 +557,7 @@ export function registerChatRoutes(app: FastifyInstance): void {
         fromMe: r.from_me === 1,
         automatico: autos.has(r.id),
         ts: r.ts,
+        seq: r.seq,
         type: r.type,
         text: r.revoked ? null : r.text,
         mediaUrl: r.media_path && !r.revoked ? `/api/whatsapp/media/${encodeURIComponent(r.chat_jid)}/${encodeURIComponent(r.id)}` : null,

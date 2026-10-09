@@ -233,6 +233,74 @@ function statements() {
   };
 }
 
+/* --------------------------- ingesta fallida ------------------------------ */
+
+function asegurarTablaFallidos(): void {
+  getDb().exec(
+    `CREATE TABLE IF NOT EXISTS ingesta_fallida (
+       id INTEGER PRIMARY KEY,
+       raw_json TEXT NOT NULL,
+       modo TEXT NOT NULL,
+       error TEXT,
+       intentos INTEGER NOT NULL DEFAULT 0,
+       created_at INTEGER NOT NULL
+     )`
+  );
+}
+
+/** Guarda un mensaje que no se pudo ingerir, para reintentarlo. Nunca lanza. */
+function guardarFallido(msg: WAMessage, modo: ModoIngesta, error: string): void {
+  try {
+    asegurarTablaFallidos();
+    getDb()
+      .prepare(`INSERT INTO ingesta_fallida (raw_json, modo, error, created_at) VALUES (?, ?, ?, ?)`)
+      .run(JSON.stringify(msg), modo, error.slice(0, 300), Math.floor(Date.now() / 1000));
+    console.error(`[ingest] mensaje ${msg.key?.id ?? "?"} apartado para reintentar: ${error}`);
+  } catch (e) {
+    console.error(`[ingest] ⚠️ no se pudo ni apartar el mensaje ${msg.key?.id ?? "?"}: ${(e as Error).message}`);
+  }
+}
+
+/** Cuántos mensajes esperan un reintento (para la salud). */
+export function ingestaPendiente(): number {
+  try {
+    asegurarTablaFallidos();
+    return (getDb().prepare(`SELECT COUNT(*) AS n FROM ingesta_fallida`).get() as { n: number }).n;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Reintenta lo apartado (al arrancar y cada hora). Lo que entra se borra; lo que
+ * vuelve a fallar suma un intento, y a los 10 se deja (queda para mirarlo a mano).
+ */
+export function reintentarIngestaFallida(): { ok: number; siguen: number } {
+  let ok = 0;
+  let siguen = 0;
+  try {
+    asegurarTablaFallidos();
+    const db = getDb();
+    const filas = db.prepare(`SELECT id, raw_json AS raw, modo FROM ingesta_fallida WHERE intentos < 10 ORDER BY id LIMIT 500`).all() as Array<{ id: number; raw: string; modo: ModoIngesta }>;
+    for (const f of filas) {
+      try {
+        const msg = JSON.parse(f.raw) as WAMessage;
+        // Como «append»: ya no es en vivo, no debe disparar campañas ni tomas manuales viejas.
+        ingestMessages([msg], { modo: f.modo === "history" ? "history" : "append", sinApartar: true });
+        db.prepare(`DELETE FROM ingesta_fallida WHERE id = ?`).run(f.id);
+        ok++;
+      } catch {
+        db.prepare(`UPDATE ingesta_fallida SET intentos = intentos + 1 WHERE id = ?`).run(f.id);
+        siguen++;
+      }
+    }
+    if (filas.length) console.log(`[ingest] reintento de apartados: ${ok} entraron, ${siguen} siguen fallando`);
+  } catch (e) {
+    console.error("[ingest] reintento de apartados falló:", (e as Error).message);
+  }
+  return { ok, siguen };
+}
+
 /* -------------------------------- ingesta --------------------------------- */
 
 export interface IngestResult {
@@ -290,7 +358,7 @@ function aprenderDeMensajes(messages: WAMessage[]): void {
   }
 }
 
-export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta; now?: number }): IngestResult {
+export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta; now?: number; sinApartar?: boolean }): IngestResult {
   const db = getDb();
   const stmts = statements();
   const out = nuevoResultado();
@@ -386,7 +454,27 @@ export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta;
       if (opts.modo !== "history" && fromMe && !grupo) out.salientes.push({ jid: jidFila, waMsgId: id, ts });
     }
   });
-  run(messages);
+  try {
+    run(messages);
+  } catch (e) {
+    /**
+     * ⚠️ UN LOTE QUE FALLA NO PUEDE PERDERSE (auditoría 09-10-2026): Baileys ya
+     * ha acusado esos mensajes ante WhatsApp y no los vuelve a mandar. Antes,
+     * un solo mensaje raro (o el disco lleno) tiraba el lote entero con un
+     * console.error y nada más. Ahora se reintenta mensaje a mensaje y lo que
+     * siga fallando se guarda CRUDO para volver a ingerirlo al arrancar.
+     */
+    console.error(`[ingest] el lote de ${messages.length} falló (${(e as Error).message}); se reintenta uno a uno`);
+    Object.assign(out, nuevoResultado());
+    for (const m of messages) {
+      try {
+        run([m]);
+      } catch (e2) {
+        if (opts.sinApartar) throw e2; // el reintento lleva su propia cuenta
+        guardarFallido(m, opts.modo, (e2 as Error).message);
+      }
+    }
+  }
   for (const [lid, pn] of mapeosPendientes) {
     try {
       aprenderMapeo(lid, pn, "mismo-mensaje");

@@ -75,7 +75,7 @@ function markSent(actor: string | null): void {
   e.count++;
 }
 
-export type SendMsgType = "text" | "image" | "audio" | "document";
+export type SendMsgType = "text" | "image" | "audio" | "document" | "video";
 export type SendResult =
   | { ok: true; message: { id: string; chatJid: string; fromMe: true; ts: number; type: SendMsgType; text: string | null; mediaUrl: string | null } }
   | { ok: false; error: string; code: "offline" | "invalid" | "rate" | "unknown-chat" | "fail" | "too-big" };
@@ -257,8 +257,8 @@ export async function sendText(
 }
 
 export interface SendMediaInput {
-  /** "image" | "audio" | "document". */
-  kind: "image" | "audio" | "document";
+  /** "image" | "audio" | "document" | "video" (vídeo desde el 09-10-2026). */
+  kind: "image" | "audio" | "document" | "video";
   buffer: Buffer;
   mimetype: string;
   fileName?: string | null;
@@ -293,7 +293,9 @@ export async function sendMedia(jidPedido: string, input: SendMediaInput, actor:
     const payload =
       input.kind === "image"
         ? { image: input.buffer, caption }
-        : input.kind === "audio"
+        : input.kind === "video"
+          ? { video: input.buffer, caption, mimetype: input.mimetype }
+          : input.kind === "audio"
           ? { audio: input.buffer, mimetype: input.mimetype, ptt: input.ptt ?? false }
           : { document: input.buffer, mimetype: input.mimetype, fileName: input.fileName ?? "archivo", caption };
     const result = await known.sock.sendMessage(jid, payload);

@@ -10,6 +10,7 @@ import { fusionInicial } from "./db/fusion";
 import { startHttpServer } from "./http/server";
 import { emitSse } from "./http/sse";
 import { registerIngest } from "./wa/ingest";
+import { reintentarIngestaFallida } from "./wa/ingestCore";
 import { seedHistoricalRead } from "./wa/readState";
 import { startWhatsapp, stopWhatsapp, onStateChange, esperarGuardadoCreds } from "./wa/socket";
 import { ensureClaudeAuth } from "./brain/secrets";
@@ -38,6 +39,9 @@ async function main(): Promise<void> {
   }
 
   registerIngest();
+  // Mensajes que no se pudieron guardar (ver `reintentarIngestaFallida`): al arrancar y cada hora.
+  reintentarIngestaFallida();
+  setInterval(() => reintentarIngestaFallida(), 60 * 60_000).unref?.();
 
   // Línea base ÚNICA del estado de lectura: pone a cero los globos de no leídos
   // (contaban años de historial porque nadie había abierto esos chats AQUÍ) para

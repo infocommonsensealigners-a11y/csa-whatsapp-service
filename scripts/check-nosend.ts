@@ -42,6 +42,9 @@ const TOKEN_ALLOWLIST = new Map<string, string>([
   ["sendMessage", "src/wa/send.ts".replace(/\//g, path.sep)],
   ["addChatLabel", "src/wa/labels.ts".replace(/\//g, path.sep)],
   ["removeChatLabel", "src/wa/labels.ts".replace(/\//g, path.sep)],
+  // Marcar leído (09-10-2026, decisión del usuario: acabar con la bandeja doble).
+  // Solo aquí, solo entrantes ya guardados, solo cuando una persona tiene el chat delante.
+  ["readMessages", "src/wa/leido.ts".replace(/\//g, path.sep)],
 ]);
 
 const SRC_DIR = path.resolve(process.cwd(), "src");

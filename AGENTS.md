@@ -46,8 +46,11 @@ dashboard se puede **RESPONDER**. La garantía no se borró, se **acotó**:
 
 - `npm run check:nosend` sigue siendo obligatorio y falla si `sendMessage`
   aparece en **cualquier fichero de `src/` que no sea `src/wa/send.ts`**. El resto
-  de tokens (`relayMessage`, `sendReceipt`, `readMessages`, `chatModify`,
-  `sendPresenceUpdate`) siguen **prohibidos en TODAS partes**.
+  de tokens (`relayMessage`, `sendReceipt`, `chatModify`, `sendPresenceUpdate`)
+  siguen **prohibidos en TODAS partes**. `readMessages` solo en `src/wa/leido.ts`
+  (09-10-2026, decisión del usuario para acabar con la bandeja doble): marca
+  leídos en WhatsApp los entrantes de un chat cuando una persona lo tiene
+  abierto y delante en el teléfono flotante (`POST /chats/:jid/leido`).
 - **Fransua NO puede enviar.** Todo `src/ai/` y `src/brain/` tiene vetado el
   token: el agente puede *sugerir* texto, pero la única salida es la ruta
   `POST /chats/:jid/send`, que llama una persona desde la interfaz.

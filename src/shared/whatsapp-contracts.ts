@@ -38,6 +38,7 @@ export interface WaStatus {
     cifradosPendientes: number;
     descifradoRoto: boolean;
     latencia?: { n: number; p50: number | null; p95: number | null };
+    ingestaApartada?: number;
   };
 }
 
@@ -145,6 +146,8 @@ export interface WaMessage {
   fromMe: boolean;
   /** Epoch seconds. */
   ts: number;
+  /** Orden de llegada a la base (desempata el mismo segundo y es el cursor de «cargar más»). */
+  seq?: number;
   type: "text" | "image" | "audio" | "video" | "document" | "other";
   text: string | null;
   /** Ruta ya proxificada ('/api/whatsapp/media/<jid>/<id>') o null. */

@@ -27,6 +27,7 @@ import { registerLinkLeadsRoutes } from "./routes/linkLeads";
 import { registerMarketingRoutes } from "./routes/marketing";
 import { registerSendRoutes } from "./routes/send";
 import { registerLabelRoutes } from "./routes/labels";
+import { registerCampanaRoutes } from "./routes/campanas";
 
 export async function startHttpServer(): Promise<FastifyInstance> {
   // bodyLimit alto: una exportación de chat larga puede pesar varios MB.
@@ -54,6 +55,7 @@ export async function startHttpServer(): Promise<FastifyInstance> {
   registerMarketingRoutes(app); // /intel/marketing-ask — resucita la barra de Inversión
   registerSendRoutes(app); // /chats/:jid/send — respuesta MANUAL desde el teléfono flotante
   registerLabelRoutes(app); // /labels y /chats/:jid/labels — etiquetas BIDIRECCIONALES
+  registerCampanaRoutes(app); // /campanas/marca — avisos de las campañas por la API de Meta (marca de agua + notas)
   // F1 (media de mensajes) cerrada 2026-08-06: descarga en vivo + servido con
   // Range + envío de adjuntos/notas de voz. Pendiente F2: tags/artifacts/jobs.
 

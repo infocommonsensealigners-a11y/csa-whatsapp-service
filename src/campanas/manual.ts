@@ -36,7 +36,9 @@
 import { config } from "../config";
 import { getDb } from "../db/db";
 import { jidToPhone } from "../wa/jidPhone";
-import { registrarNota } from "./marcas";
+import { canonicoDe } from "../wa/canonico";
+import { digitosDeJid } from "../wa/identidad";
+import { hayAnuncioCerca, registrarNota } from "./marcas";
 
 /** Prefijo del actor con el que envía la automatización (ver worker.ts). */
 const ACTOR_AUTOMATICO = "campaña:";
@@ -99,7 +101,7 @@ function token(): string | null {
  * escribir (ya pasó una vez, con el `ON CONFLICT` del índice parcial), la
  * auditoría sigue teniendo la fila con el actor `campaña:…`.
  */
-function esDeLaAutomatizacion(waMsgId: string, jid: string, ts: number): boolean {
+export function esDeLaAutomatizacion(waMsgId: string, jid: string, ts: number): boolean {
   const db = getDb();
   try {
     const marca = db.prepare(`SELECT 1 AS x FROM campana_marcas WHERE wa_msg_id = ? LIMIT 1`).get(waMsgId);
@@ -144,6 +146,14 @@ function esDeLaAutomatizacion(waMsgId: string, jid: string, ts: number): boolean
   } catch {
     /* idem */
   }
+  /**
+   * CUARTA: campañas por la API de Meta. Esos mensajes no pasan por este
+   * servicio (ni `wa_send_audit` ni `sendText`): el dashboard los ANUNCIA antes
+   * de mandarlos (`POST /campanas/marca`). Si el eco cae pegado a un anuncio
+   * para el mismo teléfono, es nuestro. La marca por id (`fase: "enviado"`)
+   * cubre el resto; esto cubre el eco que se adelanta a ella y el arranque.
+   */
+  if (hayAnuncioCerca(digitosDeJid(canonicoDe(jid)) ?? telefonoDeChat(jid), ts, MARGEN_MISMO_ENVIO_S)) return true;
   return false;
 }
 

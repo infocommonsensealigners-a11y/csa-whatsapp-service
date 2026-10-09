@@ -132,3 +132,82 @@ export function jidsConCampana(): { jid: string; campana: string | null }[] {
     return [];
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* Campañas por la API de Meta (Cloud): el aviso del dashboard                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ANUNCIOS de envío por la Cloud API. Esos mensajes NO salen por este servicio:
+ * los manda el dashboard directamente a Meta, y aquí solo llega su ECO por el
+ * dispositivo vinculado, como un saliente más (`from_me = 1`). Sin un rastro
+ * previo, la toma manual (`manual.ts`) los juzgaría escritos por Fran, avisaría
+ * al dashboard y —aunque éste lo reconozca como eco propio— dejaría el teléfono
+ * como «ya avisado» 15 minutos: si Fran escribía a mano a ese doctor justo
+ * después, su toma no frenaba el guion.
+ *
+ * El dashboard anuncia cada envío ANTES de llamar a Meta (`fase: "anuncio"`)
+ * y, al salir, manda el id (`fase: "enviado"`) para la marca de agua. Se guarda
+ * por TELÉFONO, no por jid: el eco puede llegar por un chat `@lid` que aún no
+ * sabemos de quién es. En tabla y no en memoria porque el repaso del arranque
+ * (`repasarTomasManuales`) también tiene que reconocerlos.
+ */
+let anunciosListos = false;
+
+/** Lo que se guardan los anuncios: de sobra para el repaso de cualquier campaña. */
+const ANUNCIO_TTL_S = 90 * 24 * 3600;
+
+function ensureAnuncios(): void {
+  if (anunciosListos) return;
+  const db = getDb();
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS campana_anuncios (
+       id INTEGER PRIMARY KEY,
+       telefono TEXT NOT NULL,
+       campana_id TEXT,
+       created_at INTEGER NOT NULL
+     )`
+  );
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_campana_anuncios_tel ON campana_anuncios (telefono, created_at)`);
+  anunciosListos = true;
+}
+
+/** Solo dígitos, y los móviles españoles sin el 34: la forma de `chats.phone`. */
+export function claveAnuncio(telefono: string | null | undefined): string | null {
+  let d = String(telefono ?? "").replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  if (d.length === 11 && d.startsWith("34")) d = d.slice(2);
+  return d.length >= 9 && d.length <= 15 ? d : null;
+}
+
+/** Apunta que va a salir (o acaba de salir) un mensaje automático por la Cloud API a este teléfono. */
+export function registrarAnuncio(telefono: string, campanaId: string | null): boolean {
+  const tel = claveAnuncio(telefono);
+  if (!tel) return false;
+  try {
+    ensureAnuncios();
+    const db = getDb();
+    const t = ahora();
+    db.prepare(`INSERT INTO campana_anuncios (telefono, campana_id, created_at) VALUES (?, ?, ?)`).run(tel, campanaId, t);
+    // Limpieza barata: uno de cada cien inserts.
+    if (Math.random() < 0.01) db.prepare(`DELETE FROM campana_anuncios WHERE created_at < ?`).run(t - ANUNCIO_TTL_S);
+    return true;
+  } catch (e) {
+    console.warn("[campanas] no se pudo apuntar el anuncio:", (e as Error).message);
+    return false;
+  }
+}
+
+/** ¿Hubo un anuncio para este teléfono a menos de `margenS` segundos de `ts`? */
+export function hayAnuncioCerca(telefono: string | null | undefined, ts: number, margenS: number): boolean {
+  const tel = claveAnuncio(telefono);
+  if (!tel) return false;
+  try {
+    ensureAnuncios();
+    return !!getDb()
+      .prepare(`SELECT 1 AS x FROM campana_anuncios WHERE telefono = ? AND created_at BETWEEN ? AND ? LIMIT 1`)
+      .get(tel, ts - margenS, ts + margenS);
+  } catch {
+    return false;
+  }
+}

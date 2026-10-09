@@ -581,7 +581,9 @@ export function aplicarEstadoMensajes(
 ): Set<string> {
   const db = getDb();
   const estado = db.prepare(
-    "UPDATE messages SET status = @status WHERE chat_jid = @jid AND id = @id AND COALESCE(status, -1) < @status"
+    // Los ticks solo avanzan… salvo ERROR (0): un «no se pudo enviar» tiene que
+    // poder pisar al reloj de pendiente (1), o Fran nunca vería el «!» rojo.
+    "UPDATE messages SET status = @status WHERE chat_jid = @jid AND id = @id AND (COALESCE(status, -1) < @status OR (@status = 0 AND COALESCE(status, -1) <= 1))"
   );
   const revocar = db.prepare("UPDATE messages SET revoked = 1 WHERE chat_jid = ? AND id = ? AND revoked = 0");
   const previewRevocado = db.prepare(

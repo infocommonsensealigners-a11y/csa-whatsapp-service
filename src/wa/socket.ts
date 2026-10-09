@@ -241,7 +241,13 @@ export async function startWhatsapp(): Promise<void> {
 
     let version: [number, number, number] | undefined;
     try {
-      version = (await fetchLatestBaileysVersion()).version;
+      // Con tope: si esta consulta se colgaba, `starting` quedaba encendido y no se reconectaba nunca.
+      version = (
+        await Promise.race([
+          fetchLatestBaileysVersion(),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 5_000)),
+        ])
+      ).version;
     } catch {
       version = undefined; // sin red: Baileys usa su versión embebida
     }
@@ -341,6 +347,11 @@ export async function resetSession(): Promise<void> {
 }
 
 /** Cierre ordenado del proceso (Ctrl+C / shutdown del .bat). */
+/** Espera a que terminen de guardarse las credenciales (cierre ordenado). */
+export async function esperarGuardadoCreds(maxMs = 4_000): Promise<void> {
+  await Promise.race([guardadoCreds, new Promise<void>((r) => setTimeout(r, maxMs))]);
+}
+
 export function stopWhatsapp(): void {
   shuttingDown = true;
   if (reconnectTimer) clearTimeout(reconnectTimer);

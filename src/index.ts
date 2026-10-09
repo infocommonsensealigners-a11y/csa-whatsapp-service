@@ -11,7 +11,7 @@ import { startHttpServer } from "./http/server";
 import { emitSse } from "./http/sse";
 import { registerIngest } from "./wa/ingest";
 import { seedHistoricalRead } from "./wa/readState";
-import { startWhatsapp, stopWhatsapp, onStateChange } from "./wa/socket";
+import { startWhatsapp, stopWhatsapp, onStateChange, esperarGuardadoCreds } from "./wa/socket";
 import { ensureClaudeAuth } from "./brain/secrets";
 import { startLeadLinkingScheduler } from "./brain/linkLeadsScheduler";
 import { runSidecarBackup, startBackupScheduler } from "./brain/backup";
@@ -136,10 +136,23 @@ async function main(): Promise<void> {
   console.log("[info] Publicación acotada a src/wa/send.ts (check:nosend).");
 }
 
+/**
+ * Cierre ORDENADO (cada despliegue manda SIGTERM): antes salía al instante y
+ * podía cortar a medias el guardado de las credenciales de Baileys (riesgo de
+ * tener que re-escanear el QR). Ahora espera a que termine (tope 4 s), cierra el
+ * socket y sale. Railway da ~10 s antes de matar el contenedor.
+ */
+let cerrando = false;
 function shutdown(): void {
+  if (cerrando) return;
+  cerrando = true;
   console.log("[info] Cerrando sidecar WhatsApp…");
-  stopWhatsapp();
-  process.exit(0);
+  void esperarGuardadoCreds()
+    .catch(() => {})
+    .finally(() => {
+      stopWhatsapp();
+      setTimeout(() => process.exit(0), 300).unref?.();
+    });
 }
 
 process.on("SIGINT", shutdown);

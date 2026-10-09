@@ -52,8 +52,11 @@ dashboard se puede **RESPONDER**. La garantía no se borró, se **acotó**:
   token: el agente puede *sugerir* texto, pero la única salida es la ruta
   `POST /chats/:jid/send`, que llama una persona desde la interfaz.
 - Salvaguardas en `send.ts`: solo texto (1..4096), solo chats **1-a-1**, ritmo
-  mínimo 1,5 s entre envíos y tope de 30 por 5 min, y **auditoría** en
-  `wa_send_audit` (actor, chat, longitud, cuándo).
+  en **dos carriles** (09-10-2026): el automático de campañas, 1,5 s entre
+  envíos y 30 por 5 min; una persona desde el teléfono flotante, 0,3 s y 60 por
+  5 min (antes compartían contador y Fran recibía «Demasiado rápido» por
+  escribir dos líneas seguidas). Y **auditoría** en `wa_send_audit` (actor,
+  chat, longitud, cuándo).
 
 ### 🧊 Chat en FRÍO: permitido, pero solo si quien llama lo pide (07-09-2026)
 

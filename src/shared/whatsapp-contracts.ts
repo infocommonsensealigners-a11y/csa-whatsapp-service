@@ -27,6 +27,17 @@ export interface WaStatus {
    * descargar aquí porque Baileys no los entregó.
    */
   historySync?: { lastAt: number | null; notifiedAt: number | null; pending: number; processedHere: number; total: number };
+  /**
+   * Salud de la RECEPCIÓN (09-10-2026): conectado no es lo mismo que recibir
+   * bien. `descifradoRoto` = más de la mitad de lo que entra en 2 h se queda
+   * como «esperando el mensaje…». Ver `wa/salud.ts`.
+   */
+  salud?: {
+    ventana2h: { entrantes: number; cifrados: number };
+    ultimoEntranteLegible: number | null;
+    cifradosPendientes: number;
+    descifradoRoto: boolean;
+  };
 }
 
 export interface ChatLeadLink {

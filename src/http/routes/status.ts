@@ -10,6 +10,7 @@ import type { FastifyInstance } from "fastify";
 import { aiQueuePending, getMeta, statusCounts } from "../../db/db";
 import { getMe, getQrDataUrl, getWaState, resetSession } from "../../wa/socket";
 import { estadoHistorial } from "../../wa/historial";
+import { saludWa } from "../../wa/salud";
 import { runSidecarBackup } from "../../brain/backup";
 import { brainConfigured } from "../../brain/supabase";
 import type { WaStatus } from "../../shared/whatsapp-contracts";
@@ -49,6 +50,14 @@ export function registerStatusRoutes(app: FastifyInstance): void {
       lastHistorySyncAt: lastSync ? Number(lastSync) : null,
       aiQueue: { pending: aiQueuePending(), paused: false },
       historySync: estadoHistorial(),
+      salud: (() => {
+        try {
+          const { signal: _s, ...s } = saludWa();
+          return s;
+        } catch {
+          return undefined;
+        }
+      })(),
     };
   });
 

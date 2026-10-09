@@ -29,29 +29,50 @@ import { esGrupo } from "./identidad";
 import { registrarMensajePropio, tsOf } from "./ingestCore";
 import type { WAMessage } from "baileys";
 
-const MIN_GAP_MS = 1_500;
+/**
+ * RITMO, en DOS CARRILES (09-10-2026). Antes era un único contador para todo el
+ * servicio: el automático de campañas y Fran compartían el tope, y dos mensajes
+ * seguidos de Fran («Hola» + «¿qué tal?») daban «Demasiado rápido». Era una de
+ * las razones por las que volvía al móvil (auditoría del teléfono flotante).
+ *
+ *  - automático (actor «campaña:…»): 1,5 s entre envíos y 30 cada 5 min, como siempre.
+ *  - persona (el teléfono flotante): ráfagas de escritura normales — 0,3 s
+ *    entre envíos y 60 cada 5 min. Es el ritmo de alguien tecleando, no de un robot.
+ */
+type Carril = "auto" | "persona";
+const RITMO: Record<Carril, { minGapMs: number; maxPorVentana: number }> = {
+  auto: { minGapMs: 1_500, maxPorVentana: 30 },
+  persona: { minGapMs: 300, maxPorVentana: 60 },
+};
 const WINDOW_MS = 5 * 60_000;
-const MAX_PER_WINDOW = 30;
 
-let lastSendAt = 0;
-let windowStart = 0;
-let windowCount = 0;
+const estadoRitmo: Record<Carril, { last: number; windowStart: number; count: number }> = {
+  auto: { last: 0, windowStart: 0, count: 0 },
+  persona: { last: 0, windowStart: 0, count: 0 },
+};
 
-/** Comparten el mismo contador de ritmo que el texto: no hay una vía más rápida
- *  para colarse por ser "adjunto" en vez de "mensaje". */
-function checkRate(): { ok: true } | { ok: false; error: string } {
+function carrilDe(actor: string | null): Carril {
+  return (actor ?? "").startsWith("campaña:") ? "auto" : "persona";
+}
+
+/** Adjuntos y texto comparten carril: no hay una vía más rápida por ser "adjunto". */
+function checkRate(actor: string | null): { ok: true } | { ok: false; error: string } {
+  const carril = carrilDe(actor);
+  const r = RITMO[carril];
+  const e = estadoRitmo[carril];
   const now = Date.now();
-  if (now - lastSendAt < MIN_GAP_MS) return { ok: false, error: "Demasiado rápido — espera un segundo y reenvía." };
-  if (now - windowStart > WINDOW_MS) {
-    windowStart = now;
-    windowCount = 0;
+  if (now - e.last < r.minGapMs) return { ok: false, error: "Demasiado rápido — espera un segundo y reenvía." };
+  if (now - e.windowStart > WINDOW_MS) {
+    e.windowStart = now;
+    e.count = 0;
   }
-  if (windowCount >= MAX_PER_WINDOW) return { ok: false, error: "Límite de ritmo alcanzado (30 mensajes / 5 min). Espera un poco." };
+  if (e.count >= r.maxPorVentana) return { ok: false, error: `Límite de ritmo alcanzado (${r.maxPorVentana} mensajes / 5 min). Espera un poco.` };
   return { ok: true };
 }
-function markSent(): void {
-  lastSendAt = Date.now();
-  windowCount++;
+function markSent(actor: string | null): void {
+  const e = estadoRitmo[carrilDe(actor)];
+  e.last = Date.now();
+  e.count++;
 }
 
 export type SendMsgType = "text" | "image" | "audio" | "document";
@@ -189,14 +210,14 @@ export async function sendText(
   const known = await requireOnlineChat(jidPedido, opts.permitirChatNuevo === true, opts.permitirGrupo === true);
   if (!known.ok) return known;
   const jid = known.jid;
-  const rate = checkRate();
+  const rate = checkRate(actor);
   if (!rate.ok) return { ok: false, error: rate.error, code: "rate" };
 
   const db = getDb();
   try {
     const quoted = mensajeCitado(jid, opts.citar);
     const result = await known.sock.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
-    markSent();
+    markSent(actor);
     const now = Math.floor(Date.now() / 1000);
     // La hora es la del mensaje según WhatsApp, no la del reloj local tras el
     // `await`: con `ahora` el eco (mismo id, hora real) quedaba con otro ts y el
@@ -263,7 +284,7 @@ export async function sendMedia(jidPedido: string, input: SendMediaInput, actor:
   const known = await requireOnlineChat(jidPedido, false, true);
   if (!known.ok) return known;
   const jid = known.jid;
-  const rate = checkRate();
+  const rate = checkRate(actor);
   if (!rate.ok) return { ok: false, error: rate.error, code: "rate" };
 
   const db = getDb();
@@ -276,7 +297,7 @@ export async function sendMedia(jidPedido: string, input: SendMediaInput, actor:
           ? { audio: input.buffer, mimetype: input.mimetype, ptt: input.ptt ?? false }
           : { document: input.buffer, mimetype: input.mimetype, fileName: input.fileName ?? "archivo", caption };
     const result = await known.sock.sendMessage(jid, payload);
-    markSent();
+    markSent(actor);
     const now = Math.floor(Date.now() / 1000);
     const ts = tsOf(result?.messageTimestamp, now);
     const id = result?.key?.id ?? `sent-${ts}-${Math.random().toString(36).slice(2)}`;

@@ -38,6 +38,20 @@ import { onWaEvent, downloadMedia, metadatosDeGrupo } from "./socket";
 import { analyzeChat } from "../brain/analyzeChat";
 import { saveMediaBuffer } from "./mediaStore";
 import { procesarVolcado, verMensajeDeProtocolo, vigilarHistorial } from "./historial";
+import { registrarLlegada } from "./salud";
+
+/** La fila de la lista tal como queda tras el mensaje, para mandarla en el aviso. */
+function filaDeLista(jid: string): { lastMessageAt: number | null; lastMessagePreview: string | null; lastMessageFromMe: boolean | null } | undefined {
+  try {
+    const db = getDb();
+    const c = db.prepare(`SELECT last_message_at AS t, last_message_preview AS p FROM chats WHERE jid = ?`).get(jid) as { t: number | null; p: string | null } | undefined;
+    if (!c) return undefined;
+    const m = db.prepare(`SELECT from_me AS f FROM messages WHERE chat_jid = ? ORDER BY ts DESC, rowid DESC LIMIT 1`).get(jid) as { f: number } | undefined;
+    return { lastMessageAt: c.t, lastMessagePreview: c.p, lastMessageFromMe: m ? m.f === 1 : null };
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Descarga el binario de cada candidato y actualiza `media_path`/`media_mime`.
@@ -177,6 +191,13 @@ export function registerIngest(): void {
        * en vivo (media, campañas, análisis) — ver VENTANA_VIVO_S.
        */
       const result = ingestMessages(messages, { modo: type });
+      if (type === "notify") {
+        const ahora = Date.now() / 1000;
+        for (const m of messages) {
+          const t = Number(m.messageTimestamp ?? 0);
+          if (t > 0 && !verMensajeDeProtocolo(m)) registrarLlegada(ahora - t);
+        }
+      }
       if (protocolo === messages.length) return; // solo protocolo: nada más que hacer
       /**
        * Bajas y respuestas de campaña: fuera de la transacción y sin esperar.
@@ -197,7 +218,7 @@ export function registerIngest(): void {
           (messages[0]?.key?.remoteJid ? ` primer=${messages[0].key.remoteJid}` : "")
       );
       for (const jid of result.touched) {
-        emitSse({ type: "message.new", jid });
+        emitSse({ type: "message.new", jid, chat: filaDeLista(jid) });
         // Un grupo del que aún no sabemos ni el asunto: se pide una vez.
         if (esGrupo(jid)) void asegurarAsuntoDeGrupo(jid);
       }

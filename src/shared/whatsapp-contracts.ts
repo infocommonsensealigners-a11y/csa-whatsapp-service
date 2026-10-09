@@ -37,6 +37,7 @@ export interface WaStatus {
     ultimoEntranteLegible: number | null;
     cifradosPendientes: number;
     descifradoRoto: boolean;
+    latencia?: { n: number; p50: number | null; p95: number | null };
   };
 }
 
@@ -222,7 +223,11 @@ export interface AiJobStatus {
 export type WaSseEvent =
   | { type: "ping" } // latido visible cada 25s — el cliente reconecta si deja de llegar
   | { type: "connection"; state: WaConnectionState }
-  | { type: "message.new"; jid: string }
+  /**
+   * `chat` (09-10-2026): la fila de la lista ya actualizada, para que la interfaz
+   * la suba al momento sin pedir la lista entera (velocidad de la app nativa).
+   */
+  | { type: "message.new"; jid: string; chat?: { lastMessageAt: number | null; lastMessagePreview: string | null; lastMessageFromMe: boolean | null } }
   /** Un mensaje YA guardado cambió (ticks, reacción, borrado, edición): refresca la conversación, no la lista. */
   | { type: "message.updated"; jid: string }
   /** Presencia del contacto (o de un participante del grupo) del chat suscrito. */

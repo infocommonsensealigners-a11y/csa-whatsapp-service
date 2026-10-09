@@ -24,12 +24,32 @@ export interface SaludWa {
   descifradoRoto: boolean;
   /** Contadores de libsignal desde el arranque. */
   signal: Record<string, number>;
+  /** Segundos desde WhatsApp hasta aquí (p50/p95 de los últimos 300 en vivo). */
+  latencia: { n: number; p50: number | null; p95: number | null };
 }
 
 let cache: { at: number; v: SaludWa } | null = null;
 
+/**
+ * LATENCIA DE LLEGADA: segundos desde la hora del mensaje en WhatsApp hasta que
+ * entra aquí (solo en vivo). Es la cifra para responder «¿va tan rápido como
+ * el móvil?» con datos y no con impresiones. Últimos 300.
+ */
+const llegadas: number[] = [];
+export function registrarLlegada(segundos: number): void {
+  if (!Number.isFinite(segundos) || segundos < 0 || segundos > 600) return;
+  llegadas.push(segundos);
+  if (llegadas.length > 300) llegadas.shift();
+}
+export function latenciaLlegada(): { n: number; p50: number | null; p95: number | null } {
+  if (!llegadas.length) return { n: 0, p50: null, p95: null };
+  const o = [...llegadas].sort((a, b) => a - b);
+  const p = (q: number) => o[Math.min(o.length - 1, Math.floor(q * o.length))];
+  return { n: o.length, p50: p(0.5), p95: p(0.95) };
+}
+
 export function saludWa(): SaludWa {
-  if (cache && Date.now() - cache.at < 60_000) return cache.v;
+  if (cache && Date.now() - cache.at < 60_000) return { ...cache.v, latencia: latenciaLlegada() };
   const db = getDb();
   const ahora = Math.floor(Date.now() / 1000);
   const v2 = db
@@ -51,6 +71,7 @@ export function saludWa(): SaludWa {
     cifradosPendientes: pend.n,
     descifradoRoto: v2.entrantes >= 5 && cifrados * 2 > v2.entrantes,
     signal: contadoresSignal(),
+    latencia: latenciaLlegada(),
   };
   cache = { at: Date.now(), v };
   return v;

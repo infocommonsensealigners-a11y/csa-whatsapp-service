@@ -432,7 +432,12 @@ export async function rellenarHueco(motivo: string): Promise<void> {
 export const RESCATE_VENTANA_S = 45 * 86_400;
 /** Chats como mucho por conexión, y vueltas por chat. */
 export const RESCATE_MAX_CHATS = 250;
-export const RESCATE_VUELTAS_POR_CHAT = 3;
+/**
+ * Vueltas por chat: cada una trae 50 mensajes anteriores al ancla. 3 se quedaban
+ * cortas en los chats con muchos «esperando…» seguidos (09-10: los 4 chats @lid
+ * tenían ~80 cada uno).
+ */
+export const RESCATE_VUELTAS_POR_CHAT = 8;
 
 let rescateEnCurso = false;
 let rescateHecho = false;
@@ -506,6 +511,8 @@ export async function rescatarCifrados(motivo: string, forzar = false): Promise<
         await dormir(2_000); // que termine de entrar el lote antes de recalcular
       }
       if (mejoro) chatsMejorados++;
+      const quedanAqui = cifradosDe(c.jid);
+      if (quedanAqui > 0) console.log(`[historial] rescate: ${c.jid.endsWith("@lid") ? "chat @lid" : "chat"} con ${c.n} → quedan ${quedanAqui}${mejoro ? "" : " (el móvil no devolvió nada)"}`);
       await dormir(HUECO_PAUSA_MS);
     }
     const despues = totalCifrados();

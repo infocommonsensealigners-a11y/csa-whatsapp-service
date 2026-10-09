@@ -50,6 +50,21 @@ const SEED_META_KEY = "wa_read_seed_v2";
  *
  * Nunca lanza: un fallo aquí no puede tumbar la ingesta.
  */
+/**
+ * Fran ha CONTESTADO en este chat desde su móvil: todo lo anterior está leído
+ * (para escribir hay que abrir el chat). Red de seguridad para los globos de no
+ * leídos si la sincronización del estado de chats va con retraso. Nunca lanza.
+ */
+export function marcarLeidoHasta(jid: string, ts: number): boolean {
+  try {
+    return (
+      getDb().prepare("UPDATE chats SET wa_read_at = ? WHERE jid = ? AND COALESCE(wa_read_at, 0) < ?").run(ts, jid, ts).changes > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function applyWaRead(jid: string, unreadCount: number | null | undefined): boolean {
   if (typeof unreadCount !== "number" || !Number.isFinite(unreadCount) || unreadCount < 0) return false;
   try {

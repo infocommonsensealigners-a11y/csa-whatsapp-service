@@ -44,7 +44,7 @@ import { getDb, setMeta } from "../db/db";
 import { emitSse } from "../http/sse";
 import { normalizarJid } from "./identidad";
 import { applyContactNames, ingestChatShells, ingestMessages } from "./ingestCore";
-import { getMe, getWaState, lookupLids, onStateChange, requestOlderHistory } from "./socket";
+import { getMe, getWaState, lookupLids, onStateChange, requestOlderHistory, sincronizarEstadoChats } from "./socket";
 
 const inflateAsync = promisify(inflate);
 
@@ -567,6 +567,10 @@ export function vigilarHistorial(): void {
     }
     if (huecoTimer) clearTimeout(huecoTimer);
     const motivo = trasEmparejar ? "tras emparejar" : "al conectar";
+    // Estado de los chats (leído, archivado…): ver `sincronizarEstadoChats`.
+    setTimeout(() => {
+      void sincronizarEstadoChats().then((ok) => console.log(`[estado-chats] sincronización ${ok ? "hecha" : "fallida"} (${motivo})`));
+    }, 15_000).unref?.();
     // Primero el hueco y después el rescate: los dos piden historial al móvil y no deben solaparse.
     huecoTimer = setTimeout(() => void rellenarHueco(motivo).finally(() => rescatarCifrados(motivo)), HUECO_TRAS_ABRIR_MS);
   });

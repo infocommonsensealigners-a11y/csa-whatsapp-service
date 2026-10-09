@@ -99,6 +99,8 @@ export interface ChatSummary {
   displayName: string;
   /** Es un GRUPO (`@g.us`). Desde 2026-09-11 los grupos entran como en WhatsApp Web. */
   isGroup?: boolean;
+  /** Compañero del equipo (09-10-2026): no es un lead, Fransua no lo analiza. */
+  equipo?: boolean;
   /** Estado que sincroniza el móvil: archivado, fijado (epoch s del fijado) y silenciado hasta (epoch s). */
   archived?: boolean;
   pinned?: number | null;

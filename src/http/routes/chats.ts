@@ -14,6 +14,7 @@ import type { FastifyInstance } from "fastify";
 import type { WAMessage } from "baileys";
 import { getDb } from "../../db/db";
 import { marcasDeChat } from "../../campanas/marcas";
+import { esEquipoTelefono, marcarEquipo, telefonoDeJid } from "../../wa/equipo";
 import { canonicoDe } from "../../wa/canonico";
 import { digitosDeJid, esGrupo } from "../../wa/identidad";
 import { contenidoInterior, extractContent } from "../../wa/ingestCore";
@@ -132,6 +133,8 @@ function toSummary(row: ChatRow): ChatSummary {
     lastMessageStatus: row.last_from_me === 1 ? estadoTexto(row.last_status) : null,
     participants: grupo ? row.participantes : undefined,
     unread: row.unread,
+    // Compañero del equipo (no es un lead: ver wa/equipo.ts).
+    equipo: grupo ? false : esEquipoTelefono(row.phone ?? telefonoDeJid(row.jid)),
     // Habló ELLA/ÉL el último → la pelota está en nuestro tejado (no en grupos).
     pendingReply: !grupo && row.last_from_me === 0,
     ignored: row.ignored === 1,
@@ -268,6 +271,20 @@ function citaDe(raw: string | null, chatJid: string, nombres: Map<string, string
 }
 
 export function registerChatRoutes(app: FastifyInstance): void {
+  /**
+   * POST /chats/:jid/equipo { on } — marcar (o quitar) a un compañero del
+   * equipo: su chat deja de analizarse como lead. Ver `wa/equipo.ts`.
+   */
+  app.post("/chats/:jid/equipo", async (request, reply) => {
+    const jid = jidDeRuta((request.params as { jid: string }).jid);
+    const b = (request.body ?? {}) as { on?: unknown };
+    const actor = String((request.headers["x-csa-user"] as string | undefined) ?? "").trim() || null;
+    const r = marcarEquipo(jid, b.on !== false, actor);
+    if (!r.ok) return reply.status(400).send(r);
+    emitSse({ type: "chat.updated", jid });
+    return r;
+  });
+
   app.get("/chats", async (request) => {
     const q = request.query as { query?: string; limit?: string; offset?: string };
     const limit = Math.min(Number(q.limit) || 100, 500);

@@ -25,6 +25,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   Browsers,
   downloadMediaMessage,
+  ALL_WA_PATCH_NAMES,
   type BaileysEventMap,
   type WAMessage,
   type WASocket,
@@ -347,6 +348,30 @@ export async function resetSession(): Promise<void> {
 }
 
 /** Cierre ordenado del proceso (Ctrl+C / shutdown del .bat). */
+/**
+ * SINCRONIZA EL ESTADO DE LOS CHATS (leído, archivado, fijado, silenciado,
+ * etiquetas) desde WhatsApp. Solo PIDE datos: no envía nada.
+ *
+ * ⚠️ Por qué hace falta (09-10-2026): Baileys solo hace esta sincronización
+ * inicial si le llega el aviso de historial en los 20 s siguientes a conectar.
+ * Tras re-vincular el 05-10 no llegó («Timeout in AwaitingInitialSync») y no lo
+ * volvió a intentar: en `/data/auth` no había ni una versión guardada del
+ * estado, así que lo que Fran leía en el móvil NUNCA llegaba al teléfono
+ * flotante y los globos de no leídos se quedaban congelados. Con versiones ya
+ * guardadas, esto solo trae lo que falte; después, WhatsApp avisa de cada
+ * cambio y Baileys lo aplica solo.
+ */
+export async function sincronizarEstadoChats(): Promise<boolean> {
+  if (!sock || state !== "open") return false;
+  try {
+    await sock.resyncAppState(ALL_WA_PATCH_NAMES, false);
+    return true;
+  } catch (err) {
+    log.warn({ err: (err as Error).message }, "wa: no se pudo sincronizar el estado de los chats");
+    return false;
+  }
+}
+
 /** Espera a que terminen de guardarse las credenciales (cierre ordenado). */
 export async function esperarGuardadoCreds(maxMs = 4_000): Promise<void> {
   await Promise.race([guardadoCreds, new Promise<void>((r) => setTimeout(r, maxMs))]);

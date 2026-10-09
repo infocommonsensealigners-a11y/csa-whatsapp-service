@@ -39,6 +39,8 @@ import { jidToPhone } from "../wa/jidPhone";
 import { canonicoDe } from "../wa/canonico";
 import { digitosDeJid } from "../wa/identidad";
 import { hayAnuncioCerca, registrarNota } from "./marcas";
+import { marcarLeidoHasta } from "../wa/readState";
+import { emitSse } from "../http/sse";
 
 /** Prefijo del actor con el que envía la automatización (ver worker.ts). */
 const ACTOR_AUTOMATICO = "campaña:";
@@ -281,6 +283,9 @@ export function encolarSalientePorSiEsManual(s: Saliente & { ts: number }): void
     cola.clear();
     for (const s2 of lote) {
       if (esDeLaAutomatizacion(s2.waMsgId, s2.jid, s2.ts)) continue;
+      // Lo escribió una persona desde el móvil: ese chat está leído hasta aquí.
+      const canon = canonicoDe(s2.jid) || s2.jid;
+      if (marcarLeidoHasta(canon, s2.ts)) emitSse({ type: "chat.updated", jid: canon });
       void avisarDashboard(s2.jid, null).catch(() => {});
     }
   }, RETARDO_MS);

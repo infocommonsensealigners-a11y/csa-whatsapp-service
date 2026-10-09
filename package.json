@@ -13,7 +13,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.212",
     "@supabase/supabase-js": "^2.110.7",
-    "baileys": "^6.7.18",
+    "baileys": "7.0.0-rc14",
     "better-sqlite3": "^12.4.1",
     "fastify": "^5.6.2",
     "googleapis": "^173.0.0",

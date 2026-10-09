@@ -243,7 +243,23 @@ function nuevoResultado(): IngestResult {
   return { touched: new Set(), seen: new Set(), vivos: new Set(), mediaCandidates: [], entrantes: [], salientes: [] };
 }
 
-type KeyConIdentidad = WAMessage["key"] & { senderPn?: string; senderLid?: string; participantPn?: string; participantLid?: string };
+/**
+ * Baileys 6 traía el teléfono de un `@lid` en `senderPn`/`participantPn`;
+ * Baileys 7 lo trae en `remoteJidAlt`/`participantAlt` (y al revés: si el jid es
+ * el teléfono, el `Alt` es el `@lid`). Se leen las dos formas.
+ */
+type KeyConIdentidad = WAMessage["key"] & {
+  senderPn?: string; senderLid?: string; participantPn?: string; participantLid?: string;
+  remoteJidAlt?: string; participantAlt?: string;
+};
+
+/** El teléfono (jid PN) que acompaña a un jid `@lid` en la clave, venga de Baileys 6 o 7. */
+function pnDeClave(lid: string, alt: string | null | undefined, pn6: string | null | undefined): string | null {
+  if (!esLid(lid)) return null;
+  const a = normalizarJid(alt);
+  if (a && !esLid(a)) return a;
+  return pn6 ?? null;
+}
 
 /** Aprende todo lo que un lote de mensajes dice sobre quién es quién (fuera de la transacción). */
 function aprenderDeMensajes(messages: WAMessage[]): void {
@@ -251,10 +267,15 @@ function aprenderDeMensajes(messages: WAMessage[]): void {
     const key = msg.key as KeyConIdentidad | undefined;
     if (!key) continue;
     const jid = normalizarJid(key.remoteJid);
-    if (esLid(jid) && key.senderPn && !key.fromMe) aprenderMapeo(jid, key.senderPn, "senderPn");
+    const pn = pnDeClave(jid, key.remoteJidAlt, key.senderPn);
+    if (pn) aprenderMapeo(jid, pn, key.remoteJidAlt ? "remoteJidAlt" : "senderPn");
+    // Baileys 7 también al revés: jid con teléfono y su @lid en `remoteJidAlt`.
+    const alt = normalizarJid(key.remoteJidAlt);
+    if (!esLid(jid) && esLid(alt) && !esGrupo(jid)) aprenderMapeo(alt, jid, "remoteJidAlt");
     // En un grupo, quien habla puede venir como @lid con su teléfono al lado.
     const participante = normalizarJid(key.participant);
-    if (esLid(participante) && key.participantPn) aprenderMapeo(participante, key.participantPn, "participantPn");
+    const pnP = pnDeClave(participante, key.participantAlt, key.participantPn);
+    if (pnP) aprenderMapeo(participante, pnP, key.participantAlt ? "participantAlt" : "participantPn");
   }
 }
 
@@ -327,7 +348,7 @@ export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta;
          * Se canoniza aquí; pasarlo crudo hacía que el dashboard lo tomara por un
          * internacional y descartara TODA respuesta entrada por `@lid`.
          */
-        const tel = telefonoEs(jid) ?? telefonoEs(key?.senderPn);
+        const tel = telefonoEs(jid) ?? telefonoEs(key?.senderPn) ?? telefonoEs(key?.remoteJidAlt);
         if (tel) out.entrantes.push({ telefono: tel, texto: content.text, jid, waMsgId: id });
       }
       if (opts.modo !== "history" && fromMe && !grupo) out.salientes.push({ jid, waMsgId: id, ts });
@@ -399,6 +420,9 @@ export function applyContactNames(contacts: Array<Partial<Contact>>, overwrite: 
     const jid = normalizarJid(c.id);
     if (!jid) continue;
     if (c.lid && esPn(jid)) aprenderMapeo(c.lid, jid, "contacts.lid");
+    // Baileys 7 prefiere el `@lid` como id del contacto y deja el teléfono en `phoneNumber`.
+    const pn7 = (c as { phoneNumber?: string }).phoneNumber;
+    if (esLid(jid) && pn7) aprenderMapeo(jid, pn7, "contacts.phoneNumber");
     try {
       stmts.upsertContact.run({
         jid,

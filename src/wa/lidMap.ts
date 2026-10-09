@@ -62,10 +62,10 @@ export function backfillLidPhones(): LidBackfillResult {
   // Un solo barrido por SQL: primer senderPn no nulo de cada chat @lid.
   const found = db
     .prepare(
-      `SELECT chat_jid AS jid, json_extract(raw_json, '$.key.senderPn') AS pn
+      `SELECT chat_jid AS jid, COALESCE(json_extract(raw_json, '$.key.senderPn'), json_extract(raw_json, '$.key.remoteJidAlt')) AS pn
          FROM messages
         WHERE chat_jid LIKE '%@lid'
-          AND json_extract(raw_json, '$.key.senderPn') IS NOT NULL
+          AND COALESCE(json_extract(raw_json, '$.key.senderPn'), json_extract(raw_json, '$.key.remoteJidAlt')) IS NOT NULL
         GROUP BY chat_jid`
     )
     .all() as Array<{ jid: string; pn: string }>;

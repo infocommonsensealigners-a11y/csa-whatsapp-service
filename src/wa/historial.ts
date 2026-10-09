@@ -67,7 +67,7 @@ export const HUECO_PAUSA_MS = 4_000;
 export const HUECO_ESPERA_RESPUESTA_MS = 25_000;
 export const HUECO_MENSAJES_POR_CHAT = 50;
 
-const TIPO = proto.Message.HistorySyncNotification.HistorySyncType;
+const TIPO = proto.HistorySync.HistorySyncType;
 /** Los mismos tipos que Baileys procesa (Defaults.PROCESSABLE_HISTORY_TYPES). */
 const PROCESABLES = new Set<number>([TIPO.INITIAL_BOOTSTRAP, TIPO.PUSH_NAME, TIPO.RECENT, TIPO.FULL, TIPO.ON_DEMAND]);
 
@@ -316,7 +316,7 @@ async function bajarBytes(hist: proto.Message.IHistorySyncNotification): Promise
     const stream = await downloadContentFromMessage(
       { mediaKey: hist.mediaKey ?? undefined, directPath: hist.directPath ?? undefined },
       "md-msg-hist",
-      { options: { timeout: TIEMPO_DESCARGA_MS } }
+      { options: { signal: AbortSignal.timeout(TIEMPO_DESCARGA_MS) } }
     );
     const trozos: Buffer[] = [];
     for await (const chunk of stream) trozos.push(chunk as Buffer);

@@ -316,9 +316,10 @@ export function registerIngest(): void {
 
   // El contacto ha compartido su número: WhatsApp nos dice qué teléfono hay
   // detrás de un @lid. Si tenía chat propio, se funde en el del teléfono.
-  onWaEvent("chats.phoneNumberShare", ({ lid, jid }) => {
+  // Baileys 7: el evento se llama `lid-mapping.update` y trae { lid, pn }.
+  onWaEvent("lid-mapping.update", ({ lid, pn }) => {
     try {
-      const r = aprenderMapeo(lid, jid, "phoneNumberShare");
+      const r = aprenderMapeo(lid, pn, "lid-mapping");
       if (r.fusionado) emitSse({ type: "chats.synced" });
     } catch (err) {
       console.error("[ingest] phoneNumberShare:", (err as Error).message);

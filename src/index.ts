@@ -2,6 +2,8 @@
  * Bootstrap del sidecar WhatsApp: carpetas → SQLite → conexión Baileys → HTTP.
  * Arranque: `npm run dev` (tsx watch) o `npm start`. Puerto: ver .env (WA_PORT).
  */
+// PRIMERO: calla los volcados de libsignal (llevan claves privadas). Ver el fichero.
+import "./wa/silenciarSignal";
 import { config, ensureDataDirs } from "./config";
 import { openDb } from "./db/db";
 import { fusionInicial } from "./db/fusion";

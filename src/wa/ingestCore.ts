@@ -31,6 +31,7 @@ import { isStorableChatJid } from "./jidPhone";
 import { aprenderMapeo, canonicoDe } from "./canonico";
 import { esGrupo, esLid, esPn, normalizarJid, telefonoEs } from "./identidad";
 import { previewDe, type TipoMensaje } from "./preview";
+import { esFilaDeMeta } from "./metaIngest";
 import { applyWaRead } from "./readState";
 
 export type MsgType = TipoMensaje;
@@ -191,10 +192,20 @@ function statements() {
        VALUES (@chat_jid, @id, @from_me, @ts, @type, @text, @media_path, @media_mime, @raw_json, @participant, @status, @stub)
        ON CONFLICT(chat_jid, id) DO NOTHING`
     ),
-    /** Un «esperando el mensaje…» (CIPHERTEXT) que por fin llega descifrado: se rellena en su sitio. */
-    upgradeCiphertext: db.prepare(
-      `UPDATE messages SET type = @type, text = @text, raw_json = @raw_json, stub = NULL, status = COALESCE(@status, status)
-        WHERE chat_jid = @chat_jid AND id = @id AND stub = 'CIPHERTEXT'`
+    /** El mensaje, si ya está: primero en este chat y, si no, en cualquier otro (Meta lo guarda en el del teléfono). */
+    filaConId: db.prepare(
+      `SELECT chat_jid AS jid, stub, raw_json AS raw FROM messages WHERE id = @id
+        ORDER BY CASE WHEN chat_jid = @jid THEN 0 ELSE 1 END LIMIT 1`
+    ),
+    /**
+     * Baileys trae un mensaje que ya estaba: si era un «esperando…» o una fila de
+     * la red de seguridad de Meta, se le pone lo de Baileys (el raw_json permite
+     * descargar foto/audio y lleva cita, reacciones…). Por id, esté en el chat que esté.
+     */
+    enriquecerPorId: db.prepare(
+      `UPDATE messages SET type = @type, text = COALESCE(@text, text), raw_json = @raw_json, stub = NULL,
+              status = COALESCE(@status, status), participant = COALESCE(@participant, participant)
+        WHERE id = @id AND (stub = 'CIPHERTEXT' OR raw_json LIKE '{"origen":"meta"%')`
     ),
     /** Solo tras INSERTAR: el orden de la lista es el de los mensajes reales. Un chat borrado en el móvil renace. */
     bumpChat: db.prepare(
@@ -286,6 +297,8 @@ export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta;
   const now = opts.now ?? Math.floor(Date.now() / 1000);
 
   aprenderDeMensajes(messages);
+  /** @lid que resultan ser un chat con teléfono (por un mensaje repetido): se aprenden al final. */
+  const mapeosPendientes: Array<[string, string]> = [];
 
   const run = db.transaction((batch: WAMessage[]) => {
     for (const msg of batch) {
@@ -321,26 +334,45 @@ export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta;
       const tipo: MsgType = content ? content.type : "other";
       const texto = content ? content.text : null;
       const raw = JSON.stringify(msg);
-      const inserted = stmts.insertMessage.run({
-        chat_jid: jid, id, from_me: fromMe ? 1 : 0, ts, type: tipo, text: texto,
-        media_path: null, media_mime: null, raw_json: raw, participant, status, stub: stub?.stub ?? null,
-      });
-      if (inserted.changes === 0) {
-        // Ya estaba: si era un «esperando el mensaje…» y ahora llega el contenido, se rellena.
-        if (content && stmts.upgradeCiphertext.run({ type: tipo, text: texto, raw_json: raw, status, chat_jid: jid, id }).changes > 0) {
-          out.touched.add(jid);
-        }
-        continue;
+
+      /**
+       * ¿Ya está este mensaje (en este chat o en otro)? Una fila por mensaje:
+       *  - un «esperando el mensaje…» (CIPHERTEXT) se rellena en su sitio;
+       *  - una fila que guardó la red de seguridad de Meta (`origen: "meta"`) se
+       *    ENRIQUECE con lo de Baileys (foto/audio descargables, cita…) y, como
+       *    para Baileys es nuevo, se sigue avisando (campañas, toma manual,
+       *    medios) — sin insertar otra vez ni mover el orden de la lista;
+       *  - si estaba en el chat del teléfono y Baileys lo trae por un @lid que no
+       *    conocíamos, se aprende de quién es ese @lid (al final, fuera de la
+       *    transacción).
+       */
+      const antes = stmts.filaConId.get({ id, jid }) as { jid: string; stub: string | null; raw: string | null } | undefined;
+      let jidFila = jid;
+      if (antes) {
+        if (antes.jid !== jid && esLid(jid) && !esLid(antes.jid)) mapeosPendientes.push([jidCrudo, antes.jid]);
+        const soloDeMeta = esFilaDeMeta(antes.raw);
+        const enriquecido =
+          !!content && (antes.stub === "CIPHERTEXT" || soloDeMeta) &&
+          stmts.enriquecerPorId.run({ id, type: tipo, text: texto, raw_json: raw, status, participant }).changes > 0;
+        if (enriquecido) out.touched.add(antes.jid);
+        if (!soloDeMeta || !enriquecido) continue;
+        jidFila = antes.jid;
+      } else {
+        const inserted = stmts.insertMessage.run({
+          chat_jid: jid, id, from_me: fromMe ? 1 : 0, ts, type: tipo, text: texto,
+          media_path: null, media_mime: null, raw_json: raw, participant, status, stub: stub?.stub ?? null,
+        });
+        if (inserted.changes === 0) continue;
+        const preview = stub ? previewDeStub(stub.stub) : previewDe(tipo, texto);
+        stmts.bumpChat.run({ jid, ts, preview, now });
       }
 
-      const preview = stub ? previewDeStub(stub.stub) : previewDe(tipo, texto);
-      stmts.bumpChat.run({ jid, ts, preview, now });
-      out.touched.add(jid);
+      out.touched.add(jidFila);
       if (!content) continue; // un mensaje de sistema no es media, ni campaña, ni toma manual
       const vivo = opts.modo === "notify" || (opts.modo === "append" && now - ts <= VENTANA_VIVO_S);
-      if (vivo) out.vivos.add(jid);
+      if (vivo) out.vivos.add(jidFila);
       if (vivo && content.type !== "text" && content.type !== "other") {
-        out.mediaCandidates.push({ jid, id, msg, mimetype: content.mimetype ?? null, fileName: content.fileName ?? null });
+        out.mediaCandidates.push({ jid: jidFila, id, msg, mimetype: content.mimetype ?? null, fileName: content.fileName ?? null });
       }
       if (vivo && !fromMe && !grupo && content.type === "text" && content.text) {
         /**
@@ -348,13 +380,20 @@ export function ingestMessages(messages: WAMessage[], opts: { modo: ModoIngesta;
          * Se canoniza aquí; pasarlo crudo hacía que el dashboard lo tomara por un
          * internacional y descartara TODA respuesta entrada por `@lid`.
          */
-        const tel = telefonoEs(jid) ?? telefonoEs(key?.senderPn) ?? telefonoEs(key?.remoteJidAlt);
-        if (tel) out.entrantes.push({ telefono: tel, texto: content.text, jid, waMsgId: id });
+        const tel = telefonoEs(jidFila) ?? telefonoEs(key?.senderPn) ?? telefonoEs(key?.remoteJidAlt);
+        if (tel) out.entrantes.push({ telefono: tel, texto: content.text, jid: jidFila, waMsgId: id });
       }
-      if (opts.modo !== "history" && fromMe && !grupo) out.salientes.push({ jid, waMsgId: id, ts });
+      if (opts.modo !== "history" && fromMe && !grupo) out.salientes.push({ jid: jidFila, waMsgId: id, ts });
     }
   });
   run(messages);
+  for (const [lid, pn] of mapeosPendientes) {
+    try {
+      aprenderMapeo(lid, pn, "mismo-mensaje");
+    } catch {
+      /* accesorio */
+    }
+  }
   return out;
 }
 

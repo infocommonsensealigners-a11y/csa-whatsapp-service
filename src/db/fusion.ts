@@ -172,11 +172,26 @@ export function fusionarPar(db: Database.Database, lid: string, pn: string): Res
          WHERE chat_jid = @pn AND id IN (SELECT id FROM messages WHERE chat_jid = @lid)`
       )
       .run({ lid, pn }).changes;
+    //    Y si la copia canónica era un «esperando el mensaje…» y la del @lid sí
+    //    se descifró, se queda con el contenido.
+    db.prepare(
+      `UPDATE messages SET
+         type = (SELECT l.type FROM messages l WHERE l.chat_jid = @lid AND l.id = messages.id),
+         text = (SELECT l.text FROM messages l WHERE l.chat_jid = @lid AND l.id = messages.id),
+         raw_json = (SELECT l.raw_json FROM messages l WHERE l.chat_jid = @lid AND l.id = messages.id),
+         stub = NULL
+       WHERE chat_jid = @pn AND stub = 'CIPHERTEXT'
+         AND id IN (SELECT id FROM messages WHERE chat_jid = @lid AND stub IS NULL)`
+    ).run({ lid, pn });
     // 3) Mover el resto y vaciar la fila alias.
     const antes = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE chat_jid = ?").get(pn) as { n: number }).n;
     db.prepare(
-      `INSERT OR IGNORE INTO messages (chat_jid, id, from_me, ts, type, text, media_path, media_mime, raw_json, participant)
-       SELECT ?, id, from_me, ts, type, text, media_path, media_mime, raw_json, participant FROM messages WHERE chat_jid = ?`
+      // ⚠️ TODAS las columnas: hasta el 09-10-2026 se perdían `stub`, `status`,
+      // `revoked`, `edited` y `deleted_for_me` al fundir (un «esperando el
+      // mensaje…», un «mensaje eliminado» o una llamada perdida quedaban como un
+      // globo vacío, y los ✓✓ se reseteaban).
+      `INSERT OR IGNORE INTO messages (chat_jid, id, from_me, ts, type, text, media_path, media_mime, raw_json, participant, status, revoked, edited, deleted_for_me, stub)
+       SELECT ?, id, from_me, ts, type, text, media_path, media_mime, raw_json, participant, status, revoked, edited, deleted_for_me, stub FROM messages WHERE chat_jid = ?`
     ).run(pn, lid);
     db.prepare("DELETE FROM messages WHERE chat_jid = ?").run(lid);
     const despues = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE chat_jid = ?").get(pn) as { n: number }).n;

@@ -126,6 +126,10 @@ function migrate(d: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_wa_lid_map_phone ON wa_lid_map(phone);
     CREATE INDEX IF NOT EXISTS idx_wa_lid_map_pn ON wa_lid_map(pn);
     CREATE INDEX IF NOT EXISTS idx_chats_alias ON chats(alias_of);
+    -- Buscar un mensaje por su id en CUALQUIER chat: el mismo mensaje llega por
+    -- Baileys (a veces en el chat @lid) y por el webhook de Meta (en el del
+    -- teléfono). Sin índice, cada comprobación recorría toda la tabla.
+    CREATE INDEX IF NOT EXISTS idx_messages_id ON messages(id);
     -- Agenda de WhatsApp tal como la sincroniza el móvil (contacts.upsert /
     -- contacts.update / history sync). 'name' = nombre guardado en la agenda,
     -- 'notify' = nombre que la persona se puso (pushName), 'verified_name' = el

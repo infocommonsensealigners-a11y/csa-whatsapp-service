@@ -24,6 +24,7 @@ import { registrarAnuncio, registrarAutomatico, registrarNota, claveAnuncio } fr
 import { canonicoDe } from "../../wa/canonico";
 import { jidPnDe } from "../../wa/identidad";
 import { emitSse } from "../sse";
+import { ingestarDesdeMeta, type MensajeMeta } from "../../wa/metaIngest";
 
 interface CuerpoMarca {
   fase?: unknown;
@@ -64,15 +65,36 @@ function jidDeTelefono(telefono: string): string | null {
   return canon;
 }
 
+/** Token interno: si está configurado, se exige (estas rutas escriben en los chats). */
+function tokenValido(req: { headers: Record<string, unknown> }): boolean {
+  const esperado = (process.env.FRANSUA_INTERNAL_TOKEN ?? "").trim();
+  const llega = String((req.headers["x-fransua-token"] as string | undefined) ?? "").trim();
+  return !esperado || llega === esperado;
+}
+
 export function registerCampanaRoutes(app: FastifyInstance): void {
+  /**
+   * POST /meta/mensajes — la RED DE SEGURIDAD: lo que entrega el webhook de Meta
+   * (entrantes y ecos de la app de Fran). Una fila por mensaje: rellena lo que
+   * Baileys no pudo descifrar y guarda lo que no le llegó. Ver `wa/metaIngest.ts`.
+   */
+  app.post("/meta/mensajes", async (req, reply) => {
+    if (!tokenValido(req)) return reply.status(401).send({ ok: false, error: "token inválido" });
+    const b = (req.body ?? {}) as { mensajes?: unknown };
+    const lista = Array.isArray(b.mensajes) ? (b.mensajes as MensajeMeta[]).slice(0, 500) : [];
+    if (lista.length === 0) return { ok: true, nuevos: 0, rellenados: 0, yaEstaban: 0, descartados: 0 };
+    const r = ingestarDesdeMeta(lista);
+    for (const jid of r.jids) emitSse({ type: "message.new", jid });
+    if (r.nuevos || r.rellenados) console.log(`[meta] nuevos=${r.nuevos} rellenados=${r.rellenados} ya=${r.yaEstaban}`);
+    return { ok: true, ...r };
+  });
+
   app.post("/campanas/marca", async (req, reply) => {
     /**
      * El sidecar no tiene auth propia (red privada), pero esta ruta escribe en
      * los chats: si el token interno está configurado, se exige.
      */
-    const esperado = (process.env.FRANSUA_INTERNAL_TOKEN ?? "").trim();
-    const llega = String((req.headers["x-fransua-token"] as string | undefined) ?? "").trim();
-    if (esperado && llega !== esperado) return reply.status(401).send({ ok: false, error: "token inválido" });
+    if (!tokenValido(req)) return reply.status(401).send({ ok: false, error: "token inválido" });
 
     const b = (req.body ?? {}) as CuerpoMarca;
     const fase = texto(b.fase, 20);

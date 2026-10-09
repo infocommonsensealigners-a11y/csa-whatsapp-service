@@ -426,6 +426,111 @@ export async function rellenarHueco(motivo: string): Promise<void> {
   }
 }
 
+/* ------------------------- rescate de «esperando…» ------------------------- */
+
+/** Cuánto atrás se buscan mensajes sin descifrar para pedirlos de nuevo. */
+export const RESCATE_VENTANA_S = 45 * 86_400;
+/** Chats como mucho por conexión, y vueltas por chat. */
+export const RESCATE_MAX_CHATS = 250;
+export const RESCATE_VUELTAS_POR_CHAT = 3;
+
+let rescateEnCurso = false;
+let rescateHecho = false;
+let ultimoRescate: { at: number; chats: number; antes: number; despues: number } | null = null;
+
+function cifradosDe(jid: string): number {
+  return (getDb().prepare(`SELECT COUNT(*) AS n FROM messages WHERE chat_jid = ? AND stub = 'CIPHERTEXT' AND ts >= ?`).get(jid, Math.floor(Date.now() / 1000) - RESCATE_VENTANA_S) as { n: number }).n;
+}
+
+function totalCifrados(): number {
+  return (getDb().prepare(`SELECT COUNT(*) AS n FROM messages WHERE stub = 'CIPHERTEXT' AND ts >= ? AND chat_jid NOT LIKE '%@g.us'`).get(Math.floor(Date.now() / 1000) - RESCATE_VENTANA_S) as { n: number }).n;
+}
+
+/**
+ * RESCATE de los mensajes que se quedaron como «esperando el mensaje…»
+ * (CIPHERTEXT). Pasó del 05 al 09-10-2026: ~900 mensajes que Baileys 6 no supo
+ * descifrar. El móvil de Fran SÍ los tiene, así que se le piden otra vez, chat
+ * por chat, con `fetchMessageHistory` (petición de datos: no envía nada a
+ * nadie). La respuesta entra por la ingesta normal, que rellena cada fila en su
+ * sitio por id (ver ingestCore). Una vez por conexión; si no queda nada, no hace nada.
+ *
+ * El ancla es el primer mensaje POSTERIOR al último «esperando…» del chat (el
+ * móvil devuelve los N anteriores a ella). Si el «esperando…» es lo último del
+ * chat, un ancla sintética con la hora de ahora, como en el relleno de huecos.
+ */
+export async function rescatarCifrados(motivo: string, forzar = false): Promise<{ chats: number; antes: number; despues: number } | null> {
+  if (rescateEnCurso || (rescateHecho && !forzar)) return null;
+  if (getWaState() !== "open") return null;
+  const antes = totalCifrados();
+  if (antes === 0) {
+    rescateHecho = true;
+    return { chats: 0, antes: 0, despues: 0 };
+  }
+  rescateEnCurso = true;
+  const db = getDb();
+  const desde = Math.floor(Date.now() / 1000) - RESCATE_VENTANA_S;
+  try {
+    const chats = db
+      .prepare(
+        `SELECT chat_jid AS jid, COUNT(*) AS n FROM messages
+          WHERE stub = 'CIPHERTEXT' AND ts >= ? AND chat_jid NOT LIKE '%@g.us'
+          GROUP BY chat_jid ORDER BY MAX(ts) DESC LIMIT ?`
+      )
+      .all(desde, RESCATE_MAX_CHATS) as Array<{ jid: string; n: number }>;
+    console.log(`[historial] rescate (${motivo}): ${antes} mensajes «esperando…» en ${chats.length} chats. Se piden al móvil, uno cada ${HUECO_PAUSA_MS / 1000} s.`);
+    const ultimoCifrado = db.prepare(`SELECT MAX(ts) AS t FROM messages WHERE chat_jid = ? AND stub = 'CIPHERTEXT' AND ts >= ?`);
+    const siguiente = db.prepare(`SELECT id, from_me AS fromMe FROM messages WHERE chat_jid = ? AND ts > ? ORDER BY ts ASC, rowid ASC LIMIT 1`);
+    let chatsMejorados = 0;
+    for (const c of chats) {
+      if (getWaState() !== "open") break;
+      let mejoro = false;
+      for (let vuelta = 0; vuelta < RESCATE_VUELTAS_POR_CHAT; vuelta++) {
+        const quedan = cifradosDe(c.jid);
+        if (quedan === 0) break;
+        const t = (ultimoCifrado.get(c.jid, desde) as { t: number | null }).t ?? 0;
+        const sig = siguiente.get(c.jid, t) as { id: string; fromMe: number } | undefined;
+        const ancla = sig ? { id: sig.id, fromMe: sig.fromMe === 1 } : { id: `DASHBOARD${Date.now().toString(16).toUpperCase()}`, fromMe: false };
+        const ok = await requestOlderHistory({ remoteJid: c.jid, id: ancla.id, fromMe: ancla.fromMe }, sig ? t + 1 : Math.floor(Date.now() / 1000), HUECO_MENSAJES_POR_CHAT);
+        if (!ok) break;
+        const limite = Date.now() + HUECO_ESPERA_RESPUESTA_MS;
+        let bajo = false;
+        while (Date.now() < limite) {
+          await dormir(1_000);
+          if (cifradosDe(c.jid) < quedan) {
+            bajo = true;
+            break;
+          }
+        }
+        if (!bajo) break;
+        mejoro = true;
+        await dormir(2_000); // que termine de entrar el lote antes de recalcular
+      }
+      if (mejoro) chatsMejorados++;
+      await dormir(HUECO_PAUSA_MS);
+    }
+    const despues = totalCifrados();
+    ultimoRescate = { at: Date.now(), chats: chatsMejorados, antes, despues };
+    console.log(`[historial] rescate: ${antes - despues} de ${antes} mensajes recuperados (${chatsMejorados} chats). Quedan ${despues}.`);
+    rescateHecho = true;
+    return { chats: chatsMejorados, antes, despues };
+  } catch (e) {
+    console.error("[historial] rescate falló:", (e as Error).message);
+    return null;
+  } finally {
+    rescateEnCurso = false;
+  }
+}
+
+export function estadoRescate(): { enCurso: boolean; ultimo: typeof ultimoRescate; pendientes: number } {
+  let pendientes = 0;
+  try {
+    pendientes = totalCifrados();
+  } catch {
+    /* base no lista */
+  }
+  return { enCurso: rescateEnCurso, ultimo: ultimoRescate, pendientes };
+}
+
 /* --------------------------------- arranque --------------------------------- */
 
 let vigiladoTimer: NodeJS.Timeout | null = null;
@@ -437,6 +542,7 @@ export function vigilarHistorial(): void {
   onStateChange((s) => {
     if (s === "needs_qr") huboQr = true;
     if (s !== "open") return;
+    const trasEmparejar = huboQr; // se lee antes de apagarlo abajo
     void aprenderLidPropio();
     const fila = getDb().prepare(`SELECT MAX(ts) AS t FROM messages`).get() as { t: number | null };
     const ultimo = fila.t ? new Date(fila.t * 1000).toISOString().slice(0, 16).replace("T", " ") : "—";
@@ -453,6 +559,8 @@ export function vigilarHistorial(): void {
       console.log(`[historial] conectado: la base llega hasta ${ultimo} UTC`);
     }
     if (huecoTimer) clearTimeout(huecoTimer);
-    huecoTimer = setTimeout(() => void rellenarHueco(huboQr ? "tras emparejar" : "al conectar"), HUECO_TRAS_ABRIR_MS);
+    const motivo = trasEmparejar ? "tras emparejar" : "al conectar";
+    // Primero el hueco y después el rescate: los dos piden historial al móvil y no deben solaparse.
+    huecoTimer = setTimeout(() => void rellenarHueco(motivo).finally(() => rescatarCifrados(motivo)), HUECO_TRAS_ABRIR_MS);
   });
 }

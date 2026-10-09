@@ -25,6 +25,7 @@ import { canonicoDe } from "../../wa/canonico";
 import { jidPnDe } from "../../wa/identidad";
 import { emitSse } from "../sse";
 import { ingestarDesdeMeta, type MensajeMeta } from "../../wa/metaIngest";
+import { estadoRescate, rescatarCifrados } from "../../wa/historial";
 
 interface CuerpoMarca {
   fase?: unknown;
@@ -87,6 +88,17 @@ export function registerCampanaRoutes(app: FastifyInstance): void {
     for (const jid of r.jids) emitSse({ type: "message.new", jid });
     if (r.nuevos || r.rellenados) console.log(`[meta] nuevos=${r.nuevos} rellenados=${r.rellenados} ya=${r.yaEstaban}`);
     return { ok: true, ...r };
+  });
+
+  /**
+   * Rescate de los «esperando el mensaje…» (ver `rescatarCifrados`). Corre solo
+   * tras conectar; esto es para lanzarlo a mano o ver cómo va.
+   */
+  app.get("/historial/rescate", async () => ({ ok: true, ...estadoRescate() }));
+  app.post("/historial/rescate", async (req, reply) => {
+    if (!tokenValido(req)) return reply.status(401).send({ ok: false, error: "token inválido" });
+    void rescatarCifrados("a mano", true);
+    return { ok: true, lanzado: true, ...estadoRescate() };
   });
 
   app.post("/campanas/marca", async (req, reply) => {

@@ -142,4 +142,109 @@ export function registerCampanaRoutes(app: FastifyInstance): void {
 
     return reply.status(400).send({ ok: false, error: "fase desconocida" });
   });
+
+  /**
+   * POST /campanas/actividad { personas: [{ telefono, desde }] } — SOLO LECTURA.
+   *
+   * Lo que ha pasado en el WhatsApp con cada persona DESDE que entró (`desde`,
+   * segundos epoch): cuántos mensajes se le han mandado (y cuántos de ellos los
+   * mandó la automatización: los que llevan marca en `campana_marcas`), cuántos
+   * ha escrito ella y cuándo contestó por primera vez después del primer mensaje
+   * nuestro.
+   *
+   * Por qué existe (usuario, 13-10-2026): el embudo de una campaña solo contaba
+   * las conversaciones que había llevado la automatización y dejaba fuera todo
+   * lo que Fran escribe a mano —«dudo que Fran solo haya hablado a una»—. Con
+   * esto el dashboard ve, por persona, si se le ha escrito, quién y si contestó.
+   *
+   * Busca en todos los chats de esa persona: el del teléfono, los `@lid` que
+   * apuntan a él y los alias fundidos. No envía ni escribe nada.
+   */
+  app.post("/campanas/actividad", async (req, reply) => {
+    if (!tokenValido(req)) return reply.status(401).send({ ok: false, error: "token inválido" });
+    const body = (req.body ?? {}) as { personas?: unknown };
+    const personas = Array.isArray(body.personas) ? body.personas.slice(0, 3000) : [];
+    const db = getDb();
+    const hayMarcas = !!db.prepare(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'campana_marcas'`).get();
+    const actividad: Record<string, ActividadPersona> = {};
+    for (const p of personas as Array<{ telefono?: unknown; desde?: unknown }>) {
+      const tel = texto(p?.telefono, 40);
+      const clave = claveAnuncio(tel);
+      if (!tel || !clave) continue;
+      const desde = Math.max(0, Math.floor(Number(p?.desde) || 0));
+      const jids = jidsDePersona(tel, clave);
+      if (jids.length === 0) {
+        actividad[tel] = { chat: false, salientes: 0, automaticos: 0, entrantes: 0, primerSaliente: null, ultimoSaliente: null, primeraRespuesta: null, ultimoEntrante: null };
+        continue;
+      }
+      const marcas = jids.map(() => "?").join(",");
+      const r = db
+        .prepare(
+          `SELECT SUM(CASE WHEN m.from_me = 1 THEN 1 ELSE 0 END)                         AS salientes,
+                  ${hayMarcas ? "SUM(CASE WHEN m.from_me = 1 AND EXISTS (SELECT 1 FROM campana_marcas cm WHERE cm.wa_msg_id = m.id) THEN 1 ELSE 0 END)" : "0"} AS automaticos,
+                  SUM(CASE WHEN m.from_me = 0 THEN 1 ELSE 0 END)                         AS entrantes,
+                  MIN(CASE WHEN m.from_me = 1 THEN m.ts END)                             AS primerSaliente,
+                  MAX(CASE WHEN m.from_me = 1 THEN m.ts END)                             AS ultimoSaliente,
+                  MAX(CASE WHEN m.from_me = 0 THEN m.ts END)                             AS ultimoEntrante
+             FROM messages m
+            WHERE m.chat_jid IN (${marcas}) AND m.ts >= ?`
+        )
+        .get(...jids, desde) as Record<string, number | null>;
+      const primerSaliente = r.primerSaliente ?? null;
+      const respuesta = primerSaliente
+        ? ((db
+            .prepare(`SELECT MIN(ts) AS t FROM messages WHERE chat_jid IN (${marcas}) AND from_me = 0 AND ts > ?`)
+            .get(...jids, primerSaliente) as { t: number | null }).t ?? null)
+        : null;
+      actividad[tel] = {
+        chat: true,
+        salientes: Number(r.salientes ?? 0),
+        automaticos: Number(r.automaticos ?? 0),
+        entrantes: Number(r.entrantes ?? 0),
+        primerSaliente,
+        ultimoSaliente: r.ultimoSaliente ?? null,
+        primeraRespuesta: respuesta,
+        ultimoEntrante: r.ultimoEntrante ?? null,
+      };
+    }
+    return { ok: true, actividad };
+  });
+}
+
+interface ActividadPersona {
+  /** ¿Hay algún chat con esta persona? */
+  chat: boolean;
+  /** Mensajes nuestros desde que entró (a mano + automáticos). */
+  salientes: number;
+  /** De ellos, los que mandó la automatización. */
+  automaticos: number;
+  /** Mensajes suyos desde que entró. */
+  entrantes: number;
+  primerSaliente: number | null;
+  ultimoSaliente: number | null;
+  /** Su primer mensaje DESPUÉS de nuestro primer mensaje: «contestó». */
+  primeraRespuesta: number | null;
+  ultimoEntrante: number | null;
+}
+
+/** Todos los chats de una persona: el del teléfono, los `@lid` que apuntan a él y sus alias fundidos. */
+function jidsDePersona(telefono: string, clave: string): string[] {
+  const db = getDb();
+  const pn = jidPnDe(telefono);
+  const base = new Set<string>();
+  if (pn) {
+    base.add(pn);
+    const canon = canonicoDe(pn);
+    if (canon) base.add(canon);
+  }
+  for (const f of db.prepare(`SELECT jid FROM chats WHERE phone = ?`).all(clave) as { jid: string }[]) base.add(f.jid);
+  for (const f of db
+    .prepare(`SELECT lid FROM wa_lid_map WHERE phone = ? ${pn ? "OR pn = ?" : ""}`)
+    .all(...(pn ? [clave, pn] : [clave])) as { lid: string }[]) base.add(f.lid);
+  const todos = new Set(base);
+  if (base.size > 0) {
+    const ph = [...base].map(() => "?").join(",");
+    for (const f of db.prepare(`SELECT jid FROM chats WHERE alias_of IN (${ph})`).all(...base) as { jid: string }[]) todos.add(f.jid);
+  }
+  return [...todos];
 }

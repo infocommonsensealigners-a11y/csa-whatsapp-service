@@ -12,6 +12,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { runJson, suggestModel } from "../../ai/agent";
+import { buildPromptRecepcion, validateRecepcion } from "./proposalsRecepcion";
 
 const MAX_TRANSCRIPT_CHARS = 100_000;
 
@@ -265,6 +266,20 @@ export function registerProposalRoutes(app: FastifyInstance): void {
       return reply.status(422).send({ ok: false, error: "La transcripción es demasiado corta para extraer una propuesta fiable." });
     }
     const clipped = transcript.length > MAX_TRANSCRIPT_CHARS ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) : transcript;
+
+    // La FORMACIÓN PARA RECEPCIÓN es otro documento (4 hojas con zonas V1–V12, sin
+    // hero/NEEDS/REA): tiene su propio prompt y su propio esquema. Va antes del
+    // ternario de arriba, que para cualquier valor desconocido cae en SBA.
+    if (body.programa === "recepcion") {
+      try {
+        const raw = await runJson<Record<string, unknown>>(buildPromptRecepcion(clipped), suggestModel);
+        const proposal = raw ? validateRecepcion(raw) : null;
+        if (!proposal) return reply.status(503).send({ ok: false, error: "La IA no pudo extraer un borrador válido. Reintenta." });
+        return { ok: true, proposal };
+      } catch (e) {
+        return reply.status(503).send({ ok: false, error: "IA no disponible: " + (e as Error).message });
+      }
+    }
 
     try {
       const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped, programa), suggestModel);

@@ -74,9 +74,32 @@ const SCHEMA_KEYS = [
  * y la Certificación es 100% Invisalign. Aquí solo va lo que cambia el TEXTO que
  * redacta la IA; el resto (precios, enlaces, colores) lo pone el dashboard.
  */
-type Programa = "sba" | "certificacion" | "estancia";
+export type Programa = "sba" | "certificacion" | "estancia" | "sba_planes";
+
+/**
+ * LOS DOS PLANES DEL SBA (Estándar y Premium, octubre de 2026): de UNA llamada
+ * salen DOS propuestas. El dashboard pide "sba_planes" y redacta cada plan con
+ * lo común + la variante `_ESTANDAR` / `_PREMIUM` de cada campo (criterio del
+ * `rellenar_doble.py` del kit de Fran). Un sidecar antiguo que no conozca este
+ * programa cae en "sba" (ver la ruta) y el dashboard sigue con su red de seguridad.
+ */
+const CAMPOS_CON_VARIANTE = ["heroLead1", "heroLead2", "needs", "rea"] as const;
+const SUFIJOS_PLAN = ["_ESTANDAR", "_PREMIUM"] as const;
+const CLAVES_VARIANTE = CAMPOS_CON_VARIANTE.flatMap((k) => SUFIJOS_PLAN.map((s) => `${k}${s}`));
 
 const PROGRAMA_BRIEF: Record<Programa, string> = {
+  sba_planes: `PROGRAMA: "Sistema de Biomecánica Avanzada" (SBA) — formación de CSA MULTIMARCA, vendida en DOS PLANES. De esta llamada salen DOS propuestas, una por plan, con el MISMO contenido salvo lo que dependa del plan:
+- Plan ESTÁNDAR: el programa completo de 10 meses (Teoría · Biomecánica mixta / Revisión de casos / Talleres de técnicas auxiliares) + UN (1) DÍA de estancia clínica presencial en Ortodoncia Lozano (9:30-19:00), con el ENFOQUE que elige el doctor/a (casos y técnicas auxiliares, marketing, gestión o mixto).
+- Plan PREMIUM: el mismo programa + TRES (3) DÍAS de estancia clínica presencial, uno por enfoque y ya fijados: publicidad y marketing · casos prácticos (MARPE y minitornillos) · gestión clínica.
+- La estancia es PARTE DEL PLAN que se compra (es lo que distingue un plan del otro): NUNCA la presentes como regalo, beneficio adicional, bonus ni «incluida si te inscribes antes de…», en ningún campo. El regalo (el libro) lo pone la plantilla.
+- El programa NO se casa con ninguna marca de alineador: lo que comparten todas es la biomecánica.
+- Los campos comunes ("heroLead1", "heroLead2", "needs", "rea") tienen que valer TAL CUAL para los dos planes: ahí di «la estancia» o «la estancia en la clínica» SIN decir cuántos días, sin nombrar los planes y sin decir si el enfoque se elige o viene dado.
+- Si un campo NECESITA el plan (cuántos días, el día de marketing/gestión/MARPE de la Premium, el «eliges el enfoque» de la Estándar), escríbelo ENTERO otra vez en su variante: ${CLAVES_VARIANTE.map((k) => `"${k}"`).join(", ")}. Misma forma que el campo común (en "needs"/"rea", la lista COMPLETA, no solo el elemento que cambia). Si el común vale para los dos, NO incluyas esa variante.
+- Variante ESTÁNDAR: un día de estancia y ni uno más; nunca «tres días», «jornadas», «visitas», «las estancias», «los días de estancia» ni los tres enfoques de la Premium, y sin nombrar la Premium.
+- Variante PREMIUM: tres días; no digas que el enfoque se elige (ni «los tipos de estancia» ni «el mixto»: eso es de la estancia de un día), y sin nombrar la Estándar. Si el doctor/a mostró interés por el marketing, la gestión de la clínica o el MARPE y los minitornillos, une esa necesidad con el día de la estancia que lo trabaja.
+- Las citas del doctor/a ("want") son sus palabras: van IGUAL en las variantes que en lo común.
+- Los avisos con "indice" se refieren a la lista COMÚN; si un aviso es de una variante, usa campo "general" y di de qué plan es.`,
+
   sba: `PROGRAMA: "Sistema de Biomecánica Avanzada" (SBA) — formación de CSA MULTIMARCA.
 - El programa NO se casa con ninguna marca de alineador: lo que comparten todas es la biomecánica. Si el doctor/a usa Invisalign, Spark, Smartee, Angel o alineadores propios, todo aplica igual.
 - Bloques: Teoría · Biomecánica mixta / Revisión de casos / Talleres de técnicas auxiliares / Estancia clínica.`,
@@ -103,6 +126,7 @@ const PROGRAMA_BRIEF: Record<Programa, string> = {
  */
 const STAR_BLOCK_BRIEF: Record<Programa, string> = {
   sba: `"biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (Estancia clínica — más casos/marketing/equipo)`,
+  sba_planes: `"biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (la estancia clínica del plan — más casos/marketing/gestión/equipo)`,
   certificacion: `"biomecanica" (Teoría · Biomecánica mixta), "revision" (Revisión de casos — es el valor por DEFECTO salvo que otro bloque sea claramente el dolor principal), "tecnicas" (Talleres de técnicas auxiliares — microtornillos/MARPE/quirúrgicos), "estancia" (Estancia clínica — más casos/marketing/equipo)`,
   estancia: `"biomecanica" (El día en la clínica — quiere ver trabajar, pacientes y decisiones reales; es el valor por DEFECTO), "revision" (El enfoque lo eliges tú — viene con un tema muy concreto: marketing, gestión, un tipo de caso…), "tecnicas" (Lo que te llevas — los vídeos del día y el manual, para volver sobre ello), "estancia" (Seguimiento posterior — lo que más valora es poder consultar después)`,
 };
@@ -113,9 +137,14 @@ const MODALIDAD_BRIEF: Record<Programa, string> = {
   sba: `- "modalidad": "estancia" (lo normal) o "extension". Pon "extension" SOLO si en la llamada queda claro que el doctor/a NO va a poder venir a la estancia clínica presencial en España — porque vive fuera (Latinoamérica: México, Colombia, Argentina, Chile, Perú, Ecuador…) o porque dice que no va a viajar. En ese caso el programa NO pierde la estancia sin más: se sustituye por 3 MESES EXTRA de formación (13 meses en total), y así se lo cuentas donde toque (hero y "rea"). Si vive en España o no se habla del tema, "estancia".`,
   certificacion: `- "modalidad": "estancia" (lo normal) o "extension". Pon "extension" SOLO si en la llamada queda claro que el doctor/a NO va a poder venir a la estancia clínica presencial en España — porque vive fuera (Latinoamérica: México, Colombia, Argentina, Chile, Perú, Ecuador…) o porque dice que no va a viajar. En ese caso el programa NO pierde la estancia sin más: se sustituye por 3 MESES EXTRA de formación (13 meses en total), y así se lo cuentas donde toque (hero y "rea"). Si vive en España o no se habla del tema, "estancia".`,
   estancia: `- "modalidad": siempre "estancia". Este producto ES el día presencial, así que no hay nada que sustituir por meses de programa: no uses "extension" bajo ningún concepto. Si en la llamada se ve que le cuesta viajar, eso va en "rea" (cómo se cuadra el día), no en la modalidad.`,
+  sba_planes: `- "modalidad": siempre "estancia". Los dos planes SON su estancia presencial y no se cambian por meses de programa: no uses "extension" y no escribas «3 meses extra» ni «13 meses» en ningún texto. Si en la llamada queda claro que NO va a viajar a España, añade un aviso de campo "general": «No puede viajar: encaja mejor el SBA con 3 meses extra en lugar de la estancia».`,
 };
 
-function buildPrompt(transcript: string, programa: Programa): string {
+/** Cuántas objeciones van en "rea". Los planes, 5-6 como el kit de Fran (las demás, como siempre). */
+const RANGO_REA: Record<Programa, string> = { sba: "5 a 7", certificacion: "5 a 7", estancia: "5 a 7", sba_planes: "5 a 6" };
+
+/** Exportada para los tests (`scripts/test-proposals-planes.ts`). */
+export function buildPrompt(transcript: string, programa: Programa): string {
   return `Eres el redactor de propuestas comerciales de Common Sense Aligners (CSA), formación para dentistas impartida por el Dr. Javier Lozano. Fran es el comercial; acaba de tener una llamada de venta con un/a doctor/a y esta es su transcripción (Plaud). Tu trabajo es redactar el contenido PERSONALIZADO de la propuesta que se le enviará.
 
 ${PROGRAMA_BRIEF[programa]}
@@ -130,7 +159,7 @@ REGLAS (obligatorias):
 - "drNombre": SIEMPRE tratamiento + nombre (regla FIJA — nunca el nombre a secas). Formato "Dr. <Nombre>" o "Dra. <Nombre>" (p. ej. "Dr. Juan José Saúco", "Dra. Sete", "Dra. Irene Molinos"). Deduce el género del trato en la llamada (doctora/doctor, "la Dra."), del nombre si no se dice, y usa el nombre COMPLETO (nombre y apellido) si aparece; si solo hay nombre de pila, "Dra./Dr. <NombrePila>", pero NUNCA sin el "Dr./Dra." delante. "drNombreArt": lo mismo con artículo ("el Dr. Juan José Saúco" / "la Dra. Sete"), para el pie de página.
 - "heroLead1"/"heroLead2": 2 párrafos (HTML permitido). El 1º resume su situación actual y SU necesidad principal, con el tramo más importante envuelto en <span class="hl">...</span>. El 2º es puente hacia el programa, cerrando con dos puntos.
 - "needs": 4 a 6 puntos de dolor REALES de la llamada. "want" = una frase citada ENTRE COMILLAS ANGULARES «» lo más textual posible a como lo dijo el/la doctor/a (no la inventes; si no hay cita textual clara, parafrasea en primera persona). "tag" = etiqueta corta (2-4 palabras) del bloque/tema al que corresponde. "fix" = cómo se resuelve en el programa (con el Dr. Lozano), 1-3 frases.
-- "rea": 5 a 7 objeciones o dudas que salieron en la llamada (horario, nivel/experiencia previa, tiene clínica propia o colabora en varias, si aún no tiene pacientes, fechas/vacaciones, dónde es la estancia, etc.), resueltas. "t" = titular en pocas palabras terminado en ":". "d" = resolución en 1-2 frases.
+- "rea": ${RANGO_REA[programa]} objeciones o dudas que salieron en la llamada (horario, nivel/experiencia previa, tiene clínica propia o colabora en varias, si aún no tiene pacientes, fechas/vacaciones, dónde es la estancia, etc.), resueltas. "t" = titular en pocas palabras terminado en ":". "d" = resolución en 1-2 frases.
 - CONSISTENCIA: cualquier nombre propio que se repita (marca de alineador, técnica, nombre de persona, clínica...) debe escribirse EXACTAMENTE IGUAL cada vez que aparezca, tanto en "heroLead1"/"heroLead2" como en "needs"/"rea" — nunca dos grafías distintas del mismo dato en la misma propuesta. Si la transcripción (voz→texto de Plaud) lo transcribe de forma ambigua o dudosa (marca poco común, nombre extranjero), elige UNA sola grafía y úsala en todos los sitios, y genera un aviso de tipo "general" avisando de que ese nombre puede no estar bien transcrito.
 ${MODALIDAD_BRIEF[programa]}
 - "starBlock": cuál de estos 4 bloques FIJOS es el dolor PRINCIPAL de este doctor/a — responde exactamente uno de: ${STAR_BLOCK_BRIEF[programa]}.
@@ -151,10 +180,53 @@ TRANSCRIPCIÓN (Plaud):
 ${transcript}
 ---
 
-Responde ÚNICAMENTE con un objeto JSON con EXACTAMENTE estas claves: ${SCHEMA_KEYS.join(", ")}.`;
+Responde ÚNICAMENTE con un objeto JSON con EXACTAMENTE estas claves: ${SCHEMA_KEYS.join(", ")}${
+    programa === "sba_planes"
+      ? ` — y además, SOLO las que hagan falta, estas variantes por plan: ${CLAVES_VARIANTE.join(", ")}`
+      : ""
+  }.`;
 }
 
-function validate(obj: unknown): ExtractedProposal | null {
+const limpiaNeeds = (v: unknown): ProposalNeed[] =>
+  (Array.isArray(v) ? v : [])
+    .map((n) => (n && typeof n === "object" ? (n as Record<string, unknown>) : {}))
+    .map((n) => ({ want: String(n.want ?? "").trim(), tag: String(n.tag ?? "").trim(), fix: String(n.fix ?? "").trim() }))
+    .filter((n) => n.want && n.fix);
+const limpiaRea = (v: unknown): ProposalRea[] =>
+  (Array.isArray(v) ? v : [])
+    .map((r) => (r && typeof r === "object" ? (r as Record<string, unknown>) : {}))
+    .map((r) => ({ t: String(r.t ?? "").trim(), d: String(r.d ?? "").trim() }))
+    .filter((r) => r.t && r.d);
+
+/**
+ * Las variantes `_ESTANDAR` / `_PREMIUM` de los planes. Solo se devuelven las que
+ * traen texto: una variante nula o vacía NO se envía (el dashboard la tomaría por
+ * «este plan no tiene necesidades»).
+ */
+function variantesDePlanes(o: Record<string, unknown>): Record<string, string | ProposalNeed[] | ProposalRea[]> {
+  const out: Record<string, string | ProposalNeed[] | ProposalRea[]> = {};
+  for (const s of SUFIJOS_PLAN) {
+    for (const k of ["heroLead1", "heroLead2"] as const) {
+      const v = o[`${k}${s}`];
+      if (typeof v === "string" && v.trim()) out[`${k}${s}`] = v.trim();
+    }
+    const needs = limpiaNeeds(o[`needs${s}`]);
+    if (needs.length) out[`needs${s}`] = needs;
+    const rea = limpiaRea(o[`rea${s}`]);
+    if (rea.length) out[`rea${s}`] = rea;
+  }
+  return out;
+}
+
+/** Exportada para los tests (`scripts/test-proposals-planes.ts`). */
+export function validate(obj: unknown, programa: Programa = "sba"): ExtractedProposal | (ExtractedProposal & Record<string, unknown>) | null {
+  const base = validateBase(obj);
+  if (!base || programa !== "sba_planes") return base;
+  // Los planes SON su estancia: nunca "extension", diga lo que diga el modelo.
+  return { ...base, modalidad: "estancia", ...variantesDePlanes(obj as Record<string, unknown>) };
+}
+
+function validateBase(obj: unknown): ExtractedProposal | null {
   if (!obj || typeof obj !== "object") return null;
   const o = obj as Record<string, unknown>;
   if (typeof o.drNombre !== "string" || !o.drNombre.trim()) return null;
@@ -260,7 +332,13 @@ export function registerProposalRoutes(app: FastifyInstance): void {
     // y, sobre todo, lo que dice la TRANSCRIPCIÓN (deteccionProducto.ts) — antes
     // una llamada de estancias acababa con la propuesta de SBA.
     const programa: Programa =
-      body.programa === "certificacion" ? "certificacion" : body.programa === "estancia" ? "estancia" : "sba";
+      body.programa === "certificacion"
+        ? "certificacion"
+        : body.programa === "estancia"
+          ? "estancia"
+          : body.programa === "sba_planes"
+            ? "sba_planes"
+            : "sba";
     if (!transcript) return reply.status(400).send({ ok: false, error: 'Falta "transcript".' });
     if (transcript.length < 200) {
       return reply.status(422).send({ ok: false, error: "La transcripción es demasiado corta para extraer una propuesta fiable." });
@@ -283,7 +361,7 @@ export function registerProposalRoutes(app: FastifyInstance): void {
 
     try {
       const raw = await runJson<Record<string, unknown>>(buildPrompt(clipped, programa), suggestModel);
-      const proposal = raw ? validate(raw) : null;
+      const proposal = raw ? validate(raw, programa) : null;
       if (!proposal) return reply.status(503).send({ ok: false, error: "La IA no pudo extraer un borrador válido. Reintenta." });
       return { ok: true, proposal };
     } catch (e) {

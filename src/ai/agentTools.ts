@@ -21,6 +21,7 @@ import { suggestModel } from "./agent";
 import { getLeadContext360 } from "../brain/leadContext";
 import { getBusinessSnapshot } from "../brain/businessSnapshot";
 import { getObjeciones } from "../brain/objeciones";
+import { getOrigenCampana } from "../brain/origenCampana";
 import { getObjecionesClinicas } from "../brain/objecionesClinicas";
 import { getIntelSnapshot } from "../brain/intelCache";
 import { getSupabase, brainConfigured } from "../brain/supabase";
@@ -381,6 +382,36 @@ const consultarAgenda = tool(
       return `- ${cuando} · [${e.tipo}] ${e.titulo}${e.origen === "fransua" ? " (creado por ti)" : ""}${e.phone ? ` · tel ${e.phone}` : ""}`;
     });
     return txt(`${rows.length} elementos en la agenda (${fmtMadrid(desde)} → ${fmtMadrid(hasta)}):\n${lineas.join("\n")}`);
+  }
+);
+
+/**
+ * CAMPAÑA DE ORIGEN (19-10-2026) — «¿de qué campaña de Meta viene el origen X del CRM?».
+ * Lo sirve el dashboard desde el funnel de Marketing (Meta Ads cruzado con el CRM):
+ * la misma cifra que ve Fran en «Inversión en publicidad». Aquí no se calcula nada.
+ */
+const campanaDeOrigen = tool(
+  "campana_de_origen",
+  "De qué CAMPAÑA DE META ADS viene un ORIGEN del CRM (p. ej. 'PUBLI ESTAN', 'PUBLI SBA', 'CRM GESTIÓN JAVI') y los datos agregados de esa campaña en el periodo: inversión, impresiones, clics, llegadas a la landing, leads según Meta, leads en el CRM (y cuántos con ese origen), contactados, propuestas, compras, CPL real y coste por compra. Úsala SIEMPRE que pregunten de qué campaña o anuncio viene un origen, cuánto se ha invertido en una campaña, qué está dando una campaña de Meta o cómo va la publicidad de Meta. Sin origen devuelve el mapa completo origen ↔ campaña.",
+  {
+    origen: z.string().optional().describe("el origen tal y como aparece en el CRM (p. ej. 'PUBLI ESTAN'). Vacío = mapa completo."),
+    periodo: z.string().optional().describe("30d (por defecto), 90d, mes, mesant, anio, 2025, 2024, o un mes concreto YYYY-MM"),
+  },
+  async (args: { origen?: string; periodo?: string }) => {
+    const per = (args.periodo || "30d").trim();
+    const esMes = /^\d{4}-\d{2}$/.test(per);
+    const r = await getOrigenCampana(args.origen ?? "", esMes ? "mes" : per, esMes ? per : undefined);
+    if (!r) return txt("No he podido consultar el funnel de Meta Ads ahora mismo. No me lo invento: vuelve a preguntarme en un momento.");
+    if (!r.ok) return txt("No he podido leer Meta Ads: " + (r.error || "error") + ".");
+    if (r.texto) return txt(r.texto + "\n\nLa ventana con el embudo completo está en Marketing → Inversión en publicidad → «Funnel Meta».");
+    const mapa = (r.mapa || []) as Array<Record<string, unknown>>;
+    const etiqueta = (r.periodo && r.periodo.etiqueta) || "el periodo";
+    if (!mapa.length) return txt("Ninguna campaña de Meta tiene orígenes del CRM ligados en " + etiqueta + ".");
+    const lineas = mapa.map((c) => {
+      const origs = (c.origenesCrm as Array<Record<string, unknown>>).map((o) => `${o.origen} (${o.leads} en el periodo, ${o.hist} en el histórico)`).join(", ");
+      return `• «${c.campana}» (${c.estado}) ← ${origs} · ${c.gasto} € · ${c.leadsCrm} leads en el CRM · ${c.compras} compras`;
+    });
+    return txt(`Mapa origen del CRM ↔ campaña de Meta (${etiqueta}):\n${lineas.join("\n")}`);
   }
 );
 
@@ -763,6 +794,7 @@ const READ_TOOL_NAMES = [
   "mcp__fransua__consultar_agenda",
   "mcp__fransua__objeciones_doctores",
   "mcp__fransua__objeciones_clinicas",
+  "mcp__fransua__campana_de_origen",
   "mcp__fransua__direcciones_postales",
   "mcp__fransua__mensajes_whatsapp",
   "mcp__fransua__consultar_conocimiento",
@@ -790,7 +822,7 @@ export async function runAgent(prompt: string, model?: string, actor?: string): 
   const fransuaMcpServer = createSdkMcpServer({
     name: "fransua",
     version: "1.0.0",
-    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, objecionesClinicas, direccionesPostales, mensajesWhatsapp, consultarConocimiento, ...writeTools],
+    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, objecionesClinicas, campanaDeOrigen, direccionesPostales, mensajesWhatsapp, consultarConocimiento, ...writeTools],
   });
 
   const q = query({

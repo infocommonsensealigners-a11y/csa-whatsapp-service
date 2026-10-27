@@ -22,6 +22,7 @@ import { getLeadContext360 } from "../brain/leadContext";
 import { getBusinessSnapshot } from "../brain/businessSnapshot";
 import { getObjeciones } from "../brain/objeciones";
 import { getOrigenCampana } from "../brain/origenCampana";
+import { getLeadsFiltrados } from "../brain/leadsFiltro";
 import { getObjecionesClinicas } from "../brain/objecionesClinicas";
 import { getIntelSnapshot } from "../brain/intelCache";
 import { getSupabase, brainConfigured } from "../brain/supabase";
@@ -241,7 +242,7 @@ const REACTIVABLES = new Set(["caliente", "templado"]);
  */
 const leadsDelCrm = tool(
   "leads_del_crm",
-  "Filtra los leads del CRM por ESTADO del embudo (Sin contactar, Contactado, En conversación, Propuesta enviada, Futuro, Compra, No cualifica), por TEMPERATURA de la conversación (caliente/templado/frio) y/o por RECENCIA (silencio_max_dias = solo los que escribieron hace ≤N días). Devuelve nombre, fila (sourceRow), teléfono, estado y temperatura — justo lo que necesitas para abrir una vista del CRM con [[VISTA_CRM]]. Combina filtros libremente.",
+  "Filtra los leads del CRM por ESTADO del embudo (Sin contactar, Contactado, En conversación, Propuesta enviada, Futuro, Compra, No cualifica), por TEMPERATURA de la conversación (caliente/templado/frio) y/o por RECENCIA (silencio_max_dias = solo los que escribieron hace ≤N días). Devuelve nombre, fila (sourceRow), teléfono, estado y temperatura — justo lo que necesitas para abrir una vista del CRM con [[VISTA_CRM]]. Combina filtros libremente. Para filtrar por ORIGEN o por FECHA DE ENTRADA, o para sacar un CSV, usa leads_filtrados.",
   {
     estado: z.string().optional().describe("estado del embudo tal cual el CRM, p.ej. 'Propuesta enviada' (contiene, sin acentos)"),
     temperatura: z.enum(["caliente", "templado", "frio"]).optional().describe("temperatura de la conversación (intel de Fransua)"),
@@ -299,6 +300,58 @@ const leadsDelCrm = tool(
     return txt(
       `${total} leads del CRM cumplen (muestro ${out.length}; para [[VISTA_CRM]] usa sus teléfonos, la fila como apoyo):\n` +
         out.join("\n")
+    );
+  }
+);
+
+/**
+ * LEADS FILTRADOS (27-10-2026) — Fran pedía «los de CRM GESTIÓN JAVI de octubre»
+ * y Fransua contestaba que solo podía filtrar por estado: `leads_del_crm` lee el
+ * directorio del sidecar, que no tiene origen ni fecha. Esta la sirve el
+ * dashboard con el mismo motor que la tabla del CRM, y trae el enlace del CSV.
+ */
+const leadsFiltrados = tool(
+  "leads_filtrados",
+  "Filtra el CRM ENTERO por ORIGEN (p. ej. 'CRM GESTIÓN JAVI', 'PUBLI SBA', 'gestion'), ESTADO, PRODUCTO y/o FECHA DE ENTRADA (desde/hasta), con el MISMO motor que la tabla del CRM: cuenta también a quien volvió a entrar por ese origen, y fecha+origen los tiene que cumplir la misma entrada. Devuelve el TOTAL, el reparto por origen y por estado, una muestra con nombre/teléfono/fila y el ENLACE DEL CSV con todos. Úsala SIEMPRE que pidan leads por origen, por fechas, «los que entraron en octubre», «todos menos los del taller», cuántos leads hay de algo, o una lista/CSV/Excel de leads. Varios valores separados por comas.",
+  {
+    origen: z.string().optional().describe("origen(es) a incluir; casa por «contiene» sin acentos: 'gestion' = CRM GESTIÓN JAVI. Varios: 'publi sba, publi estan'"),
+    excluir_origen: z.string().optional().describe("origen(es) a quitar, p. ej. 'gestion, tads' para «todos menos los talleres»"),
+    estado: z.string().optional().describe("estado(s) del embudo a incluir, p. ej. 'Sin contactar' o 'propuesta'"),
+    excluir_estado: z.string().optional().describe("estado(s) a quitar, p. ej. 'Compra, No cualifica'"),
+    producto: z.string().optional().describe("producto(s): 'SBA', 'Certificación', 'Estancia'"),
+    desde: z.string().optional().describe("fecha de entrada desde, AAAA-MM-DD, incluida"),
+    hasta: z.string().optional().describe("fecha de entrada hasta, AAAA-MM-DD, incluida"),
+    texto: z.string().optional().describe("búsqueda por nombre, email o teléfono"),
+  },
+  async (args: Record<string, string | undefined>) => {
+    const r = await getLeadsFiltrados(args);
+    if (!r) return txt("No he podido consultar el CRM ahora mismo. No me lo invento: vuelve a preguntarme en un momento.");
+    if (!r.ok) return txt("No he podido filtrar: " + (r.error || "error") + ".");
+    const ap = r.aplicado;
+    const partes: string[] = [];
+    if (ap?.origenes.length) partes.push(`origen ∈ {${ap.origenes.join(", ")}}`);
+    if (ap?.estados.length) partes.push(`estado ∈ {${ap.estados.join(", ")}}`);
+    if (ap?.productos.length) partes.push(`producto ∈ {${ap.productos.join(", ")}}`);
+    if (ap?.fecha) partes.push(`entrada ${ap.fecha.from || "…"} → ${ap.fecha.to || "…"}`);
+    if (ap?.texto) partes.push(`texto «${ap.texto}»`);
+    const reparto = (o: Record<string, number> | undefined) =>
+      Object.entries(o ?? {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}: ${n}`).join(" · ");
+    const muestra = (r.muestra ?? []).map(
+      (m) => `- ${m.nombre || "?"} (fila ${m.fila})${m.telefono ? ` · tel ${m.telefono}` : ""} · ${m.estado} · ${m.origen}${m.fecha ? ` (${m.fecha})` : ""}${m.reentrada ? " · reentrada" : ""}`,
+    );
+    return txt(
+      [
+        `${r.total} leads de ${r.totalCrm} cumplen [${partes.join(" · ") || "sin filtros"}].`,
+        r.sinCoincidencia?.length ? `⚠️ Sin coincidencia en el CRM: ${r.sinCoincidencia.join(", ")} (revisa cómo se escribe).` : "",
+        `Por origen de la entrada: ${reparto(r.porOrigen) || "—"}`,
+        `Por estado: ${reparto(r.porEstado) || "—"}`,
+        muestra.length ? `Muestra (${muestra.length}${(r.total ?? 0) > muestra.length ? ` de ${r.total}` : ""}):\n${muestra.join("\n")}` : "",
+        r.csvUrl
+          ? `CSV con TODOS (abre con la sesión de Fran): ${r.csvUrl}\nPara que salga como botón, termina tu respuesta con la línea: [[INFORME]]{"titulo":"Descargar CSV (${r.total} leads)","url":"${r.csvUrl}"}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
     );
   }
 );
@@ -789,6 +842,7 @@ const READ_TOOL_NAMES = [
   "mcp__fransua__foto_negocio",
   "mcp__fransua__buscar_leads",
   "mcp__fransua__leads_del_crm",
+  "mcp__fransua__leads_filtrados",
   "mcp__fransua__conversacion_lead",
   "mcp__fransua__dormidos_reactivables",
   "mcp__fransua__consultar_agenda",
@@ -822,7 +876,7 @@ export async function runAgent(prompt: string, model?: string, actor?: string): 
   const fransuaMcpServer = createSdkMcpServer({
     name: "fransua",
     version: "1.0.0",
-    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, objecionesClinicas, campanaDeOrigen, direccionesPostales, mensajesWhatsapp, consultarConocimiento, ...writeTools],
+    tools: [fichaLead, fotoNegocio, buscarLeads, leadsDelCrm, leadsFiltrados, conversacionLead, dormidosReactivables, consultarAgenda, objecionesDoctores, objecionesClinicas, campanaDeOrigen, direccionesPostales, mensajesWhatsapp, consultarConocimiento, ...writeTools],
   });
 
   const q = query({

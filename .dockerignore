@@ -7,3 +7,4 @@ data
 .gitignore
 *.log
 npm-debug.log
+dist

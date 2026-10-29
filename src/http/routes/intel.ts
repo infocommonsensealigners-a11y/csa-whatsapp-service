@@ -100,6 +100,13 @@ export function registerIntelRoutes(app: FastifyInstance): void {
       else byTemp.sin_dato++;
     }
 
+    // SOLO RECUENTOS (29-10-2026, ahorro de Railway): el latido del dock de
+    // Fransua solo quiere saber si el cerebro responde, y bajaba el resumen
+    // entero (~690 KB) cada minuto. Sin las listas son unos cientos de bytes.
+    if ((req.query as any)?.solo === "recuentos") {
+      return { generatedAt: new Date().toISOString(), since: since ?? STRATEGY_SINCE, total: rows.length, byTemp };
+    }
+
     // CATEGORÍA: los que YA son alumnos/clientes (etiqueta "cliente", puesta por
     // el análisis o por el sync de verdad-terreno del CRM) SALEN de los carriles
     // de VENTA y van a su carril propio — un alumno esperando respuesta importa,

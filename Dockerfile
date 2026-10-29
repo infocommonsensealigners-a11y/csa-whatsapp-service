@@ -8,12 +8,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 
 WORKDIR /app
 
-# Dependencias primero (mejor cacheo). Incluye dev: tsx/typescript se usan en runtime.
+# Dependencias primero (mejor cacheo). Incluye dev: typescript compila en el build
+# y tsx queda para los scripts que se lanzan a mano (check:nosend, diag-*).
 COPY package.json package-lock.json ./
 RUN npm ci --include=dev
 
-# Código fuente (ver .dockerignore: NO entran .env ni data/).
+# Código fuente (ver .dockerignore: NO entran .env, data/ ni un dist/ local).
 COPY . .
 
+# Compilado a JavaScript (29-10-2026, ahorro de Railway): arrancar con
+# `npx tsx` tenía vivos npx + el tsx padre + esbuild (~180 MB de RAM fija,
+# cobrada por minuto). `scripts/build-esm.mjs` falla el build si algún import
+# no resuelve, así que un error sale aquí y no al arrancar en producción.
+RUN npm run build
+
 # Railway inyecta PORT; el server escucha en WA_HOST/PORT (variables de entorno).
-CMD ["npx", "tsx", "src/index.ts"]
+# `exec` directo de node: recibe él las señales de parada (cierre limpio de Baileys).
+CMD ["node", "dist/index.js"]

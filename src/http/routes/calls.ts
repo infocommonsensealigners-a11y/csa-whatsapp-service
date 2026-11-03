@@ -99,7 +99,7 @@ function buildCalibracionBlock(cals: CalibracionHint[]): string {
  *  análisis evaluaba con la oferta equivocada (2.900€, SIN pronto
  *  pago) y el sesgo entraba además en la recalibración. Mismos datos que
  *  dashboard/lib/domain/conectoresProgramas.ts. */
-type ProgramaKey = "sba" | "cert" | "estancia";
+type ProgramaKey = "sba" | "cert" | "estancia" | "marpe";
 const PROGRAMA_BRIEF: Record<ProgramaKey, { nombre: string; oferta: string }> = {
   sba: {
     nombre: "SBA (Sistema de Biomecánica Avanzada)",
@@ -113,9 +113,17 @@ const PROGRAMA_BRIEF: Record<ProgramaKey, { nombre: string; oferta: string }> = 
     nombre: "Estancia clínica SUELTA en Ortodoncia Lozano (UN DÍA presencial, sin el programa de 10 meses)",
     oferta: "PRECIO (1.000 € el día, aplazable hasta en 9 cuotas), lo que se lleva (5 vídeos editados, manual de +300 páginas, 2 reuniones de seguimiento)",
   },
+  // INMERSIÓN EN MARPE (03-11-2026, producto nuevo; mismos datos que
+  // dashboard/lib/domain/inmersionMarpe.ts y el catálogo de productos).
+  marpe: {
+    nombre: "Inmersión en MARPE (DOS DÍAS presenciales en la clínica de Murcia, 6 doctores por edición, colocan su primer MARPE en paciente real; 1ª edición 4 y 5 de marzo de 2027)",
+    oferta: "PRECIO (2.000 € hasta el viernes 27-11-2026 —Black Friday—, 3.000 € desde el sábado 28; se reserva plaza con 400 € por transferencia y la factura va por el total), comidas de los dos días incluidas y hotel no, sin requisito de experiencia previa, cambio de edición hasta 30 días antes y devolución solo por causa mayor",
+  },
 };
 function normPrograma(v: unknown): ProgramaKey | null {
   const s = String(v ?? "").toLowerCase();
+  // La Inmersión va antes que nada: «Inmersión Clínica MARPE» no es una estancia.
+  if (/marpe|inmersi/.test(s)) return "marpe";
   // La estancia va PRIMERO: su propio nombre contiene "clinic"/"estancia" y una
   // llamada de estancia suelta no se evalúa con el baremo del programa de 10 meses.
   if (/estancia/.test(s)) return "estancia";
@@ -134,6 +142,16 @@ function normPrograma(v: unknown): ProgramaKey | null {
  * verdad decide: a qué viene, qué se lleva y con qué fecha se queda.
  */
 function playbookDe(programa: ProgramaKey | null, objecionPrecio: string): string {
+  if (programa === "marpe") {
+    return `Ánclate en lo que es ESTE producto (no en el programa de 10 meses ni en la estancia de un día):
+- Lo que se vende son DOS DÍAS en la clínica de Murcia con el Dr. Javier Lozano y su equipo, en grupos de 6 doctores, en los que cada uno COLOCA SU PRIMER MARPE en un paciente real (el paciente lo pone la clínica). El procedimiento es el de CSA; del Prof. Kee-Joon Lee (Seúl, creador del MARPE) se toman las bases biológicas.
+- Argumentos de peso AQUÍ: hacerlo con las manos y no solo verlo, grupo pequeño (6 plazas), el MARPE en adultos como tratamiento que la clínica ya hace a diario, y que Javi y Enrique, siendo ya profesionales del MARPE, siguen formándose en vanguardia (curso de Seúl).
+- ⛔ Lo que NO se vende en este producto: teoría de 10 meses, revisión diaria de casos, sesiones en directo ni comunidad del SBA; tampoco es la estancia clínica de un día. Si Fran prometió algo de eso, ES UN FALLO y hay que decirlo.
+- Qué conviene averiguar: si ya coloca miniimplantes o algún MARPE, qué casos de adultos le llegan y deriva, qué edición le cuadra y desde dónde viaja.
+- Objeciones típicas y sus técnicas: ${objecionPrecio}; «no tengo experiencia con miniimplantes» (no hace falta), el viaje y cuadrar dos días de agenda, «¿y si no puedo ir a esa fecha?» (cambio de edición hasta 30 días antes), el miedo a la primera colocación.
+- Cómo se cierra AQUÍ: con la RESERVA de plaza (400 € por transferencia) en una edición concreta. Las plazas son pocas y el precio sube el 28-11: la urgencia es real y Fran puede usarla, sin inventarse otra.
+- Señales de compra: pregunta por fechas, por cómo se paga la reserva, por qué tiene que traer o por el paciente, cuenta qué caso querría tratar.`;
+  }
   if (programa === "estancia") {
     return `Ánclate en lo que es ESTE producto (no en el programa de 10 meses, y no en coaching genérico):
 - Lo que se vende es UN DÍA: el doctor/a viene a la clínica (9:30-19:00) con el Dr. Lozano, ve pacientes y decisiones reales, ELIGE el enfoque del día (casos y técnicas auxiliares, marketing, gestión de la consulta o mixto) y se lleva 5 vídeos editados, un manual de +300 páginas y 2 reuniones de seguimiento.
@@ -161,6 +179,16 @@ function playbookDe(programa: ProgramaKey | null, objecionPrecio: string): strin
  *  a propósito: así la nota de Fransua, la autoevaluación de Fran y todas las
  *  medias del dashboard siguen siendo comparables entre productos. */
 function baremoDe(programa: ProgramaKey | null): string {
+  if (programa === "marpe") {
+    return `BAREMO. Puntúas la EJECUCIÓN DE FRAN, no lo caliente que viniera el doctor/a: lo que dependa del lead (si ya venía decidido, su presupuesto, sus pegas) es CONTEXTO y NO sube ni baja la nota.
+Ojo con la escala: es un producto NUEVO (noviembre de 2026) y AÚN NO hay muestra medida de cuántas llamadas acaban en reserva — no te inventes tasas ni las tomes del programa de 10 meses. Una llamada bien llevada normal está en 65-80; reserva 85-100 para lo excepcional y baja de 50 solo si hubo fallos claros de ejecución. NO penalices que Fran hable mucho.
+- CUALIFICACIÓN = saber de dónde parte · 0 no preguntó nada | 40 por encima | 65 sabe si coloca miniimplantes o MARPE y qué casos de adultos le llegan | 85 + qué quiere conseguir con el MARPE en su consulta y qué edición le cuadra | 100 + lo confirmó con sus palabras y ordenó la llamada alrededor de eso.
+- ARGUMENTACIÓN = contar los DOS DÍAS ligados a lo suyo · 0 recitó lo que incluye | 40 ventajas genéricas | 65 le contó qué hará esos dos días y que colocará su primer MARPE | 85 + concretó el grupo de 6, el paciente real y lo que se lleva para empezar en su consulta | 100 + un caso real parecido al suyo que le hizo proyectarse. ⛔ Si prometió cosas del programa de 10 meses o de la estancia de un día, baja la nota y ponlo en "debilidades".
+- OBJECIONES = resolver lo que frena aquí: la experiencia previa, el viaje, la fecha, el precio · 0 las esquivó | 40 de pasada | 65 bien contestadas | 85 + con concreción y comprobando que quedaba conforme | 100 + destapó la que no decía. Si apenas hubo pegas, deja 65 y dilo en el resumen.
+- CIERRE = que la plaza quede reservada o en camino · 0 quedó en el aire | 40 «te paso la información» | 65 acordaron la reserva y volver a hablar | 85 + con edición concreta y sabiendo el doctor/a cómo y hasta cuándo reservar (400 €, precio hasta el 27-11) | 100 + salió con la reserva hecha o la transferencia comprometida con fecha.
+- RAPPORT = claridad y trato · 0 confuso o cortante | 40 correcto pero plano | 65 se entiende y el trato es cómodo | 85 + explica lo técnico con claridad y responde a lo que pregunta | 100 + conversación de tú a tú: el doctor/a cuenta lo que le preocupa de verdad.
+`;
+  }
   if (programa === "estancia") {
     return `BAREMO. Puntúas la EJECUCIÓN DE FRAN, no lo caliente que viniera el doctor/a: todo lo que dependa del lead (cuántas pegas trae, si ya venía decidido, su presupuesto, su entusiasmo) es CONTEXTO y NO sube ni baja la nota.
 Ojo con la escala: esto es una venta CORTA (1.000 €, un día) y de estancias sueltas AÚN NO hay muestra medida en CSA — no te inventes tasas de conversión ni las tomes prestadas del programa de 10 meses. Una llamada bien llevada normal está en 65-80; reserva 85-100 para lo excepcional y baja de 50 solo si hubo fallos claros de ejecución. NO penalices que Fran hable mucho ni el reparto del turno de palabra.
@@ -185,17 +213,17 @@ function buildPrompt(transcript: string, cals: CalibracionHint[] = [], programa:
   const prog = programa ? PROGRAMA_BRIEF[programa] : null;
   const contextoPrograma = prog
     ? `Esta llamada es del programa ${prog.nombre} — evalúa contra ESA oferta, no contra otro programa.`
-    : `CSA vende TRES cosas distintas: ${PROGRAMA_BRIEF.sba.nombre}, ${PROGRAMA_BRIEF.cert.nombre} y ${PROGRAMA_BRIEF.estancia.nombre}. Deduce cuál se está vendiendo y evalúa contra la oferta de ESE producto (no los mezcles); si lo que se vende es la estancia suelta, no la juzgues como si fuera el programa de 10 meses.`;
+    : `CSA vende CUATRO cosas distintas: ${PROGRAMA_BRIEF.sba.nombre}, ${PROGRAMA_BRIEF.cert.nombre}, ${PROGRAMA_BRIEF.estancia.nombre} y ${PROGRAMA_BRIEF.marpe.nombre}. Deduce cuál se está vendiendo y evalúa contra la oferta de ESE producto (no los mezcles); si lo que se vende es la estancia suelta, no la juzgues como si fuera el programa de 10 meses.`;
   const objecionPrecio = prog
     ? prog.oferta
-    : `según el producto — SBA: ${PROGRAMA_BRIEF.sba.oferta}; Certificación: ${PROGRAMA_BRIEF.cert.oferta}; Estancia suelta: ${PROGRAMA_BRIEF.estancia.oferta}`;
+    : `según el producto — SBA: ${PROGRAMA_BRIEF.sba.oferta}; Certificación: ${PROGRAMA_BRIEF.cert.oferta}; Estancia suelta: ${PROGRAMA_BRIEF.estancia.oferta}; Inmersión en MARPE: ${PROGRAMA_BRIEF.marpe.oferta}`;
   return `Eres analista comercial senior de Common Sense Aligners (CSA), que forma a dentistas con los programas del Dr. Javier Lozano. Fran es el comercial. ${contextoPrograma} Analiza esta transcripción de una LLAMADA DE VENTA (Plaud) y evalúa CÓMO condujo Fran la llamada: qué hizo bien, qué falló y por qué esa llamada acabaría (o no) convirtiendo. NO redactes propuesta; ESTO ES EVALUACIÓN.${buildCalibracionBlock(cals)}
 
 ${playbookDe(programa, objecionPrecio)}
 
 REGLAS de salida:
 - "resumen": 1-2 frases de qué pasó en la llamada y cómo quedó.
-- "producto": SBA / Certificación / Estancia si se deduce, si no null.
+- "producto": SBA / Certificación / Estancia / Inmersión en MARPE si se deduce, si no null.
 - "diarizado": true SOLO si la transcripción distingue quién habla (hay marcas de interlocutor). Si es una masa de texto sin distinguir, false.
 - "talkRatioComercial": si "diarizado" es true, % aproximado (0-100) del tiempo que habla FRAN (el comercial); si false, null. Es un DATO DESCRIPTIVO, no una nota: en estas llamadas de formación quien compra y quien no compra hablan lo mismo, así que no lo uses para puntuar ni lo cites como debilidad por sí solo.
 - "cualifico": true/false/null — ¿cualificó de verdad al doctor/a (sistema, volumen, decisor, dolor)?

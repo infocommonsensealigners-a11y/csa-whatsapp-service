@@ -99,7 +99,7 @@ function buildCalibracionBlock(cals: CalibracionHint[]): string {
  *  análisis evaluaba con la oferta equivocada (2.900€, SIN pronto
  *  pago) y el sesgo entraba además en la recalibración. Mismos datos que
  *  dashboard/lib/domain/conectoresProgramas.ts. */
-type ProgramaKey = "sba" | "cert" | "estancia" | "marpe";
+type ProgramaKey = "sba" | "cert" | "estancia" | "marpe" | "pack3";
 const PROGRAMA_BRIEF: Record<ProgramaKey, { nombre: string; oferta: string }> = {
   sba: {
     nombre: "SBA (Sistema de Biomecánica Avanzada)",
@@ -119,10 +119,18 @@ const PROGRAMA_BRIEF: Record<ProgramaKey, { nombre: string; oferta: string }> = 
     nombre: "Inmersión en MARPE (DOS DÍAS presenciales en la clínica de Murcia, 6 doctores por edición, colocan su primer MARPE en paciente real; 1ª edición 25 y 26 de febrero de 2027, 2ª 20 y 21 de mayo de 2027)",
     oferta: "PRECIO (2.000 € hasta el viernes 27-11-2026 —Black Friday—, 3.000 € desde el sábado 28; se reserva plaza con 400 € por transferencia y la factura va por el total), comidas de los dos días incluidas y hotel no, sin requisito de experiencia previa, cambio de edición hasta 30 días antes y devolución solo por causa mayor",
   },
+  // PACK 3 ESTANCIAS (04-11-2026, producto nuevo; mismos datos que
+  // dashboard/lib/domain/pack3Estancias.ts y el catálogo de productos).
+  pack3: {
+    nombre: "Pack 3 Estancias (TRES DÍAS separados en Ortodoncia Lozano, lo normal un lunes al mes: Día 1 publicidad y marketing, Día 2 MARPE y microtornillos, Día 3 gestión clínica; cada día con una persona del equipo del doctor)",
+    oferta: "PRECIO (4.000 € en pago único por transferencia o 9 cuotas de 444,44 € sin intereses; por separado cada estancia acompañada vale 2.000 €, las tres 6.000 €), lo que se lleva (los 5 vídeos editados, el manual de protocolos de +200 páginas y las plantillas de la clínica), fechas a elegir con 2-3 alternativas por día",
+  },
 };
 function normPrograma(v: unknown): ProgramaKey | null {
   const s = String(v ?? "").toLowerCase();
-  // La Inmersión va antes que nada: «Inmersión Clínica MARPE» no es una estancia.
+  // El PACK antes que nada: «Pack 3 estancias» nombra la estancia y su Día 2 es de MARPE.
+  if (/\bpack/.test(s)) return "pack3";
+  // La Inmersión va antes que el resto: «Inmersión Clínica MARPE» no es una estancia.
   if (/marpe|inmersi/.test(s)) return "marpe";
   // La estancia va PRIMERO: su propio nombre contiene "clinic"/"estancia" y una
   // llamada de estancia suelta no se evalúa con el baremo del programa de 10 meses.
@@ -142,6 +150,16 @@ function normPrograma(v: unknown): ProgramaKey | null {
  * verdad decide: a qué viene, qué se lleva y con qué fecha se queda.
  */
 function playbookDe(programa: ProgramaKey | null, objecionPrecio: string): string {
+  if (programa === "pack3") {
+    return `Ánclate en lo que es ESTE producto (no en el programa de 10 meses, ni en una estancia suelta de un día, ni en la Inmersión en MARPE):
+- Lo que se vende son TRES DÍAS separados en la clínica con el Dr. Lozano (lo normal, un lunes al mes, de 9:30 a 19:00), cada uno con una persona distinta del equipo del doctor: Día 1 publicidad y marketing (campañas de pago, seguimiento de contactos, se le graban 5 vídeos), Día 2 MARPE y microtornillos (teoría y gabinete, puede colocarlos él/ella), Día 3 gestión clínica (protocolos, higienistas, primeras visitas, presupuestos, seguimiento virtual).
+- Argumentos de peso AQUÍ: ver una clínica real funcionando en las tres áreas, el tiempo entre un día y otro para aplicar lo aprendido, que el equipo lo vea con él/ella (menos barreras al cambio en la consulta) y lo que se lleva (vídeos editados, manual de +200 páginas, plantillas).
+- ⛔ Lo que NO se vende en este producto: teoría de 10 meses, revisión diaria de casos ni sesiones en directo del SBA; tampoco las plazas/ediciones de la Inmersión. Si Fran prometió algo de eso, ES UN FALLO y hay que decirlo.
+- Qué conviene averiguar: qué quiere resolver en cada área (captación, clínica, gestión), quién de su equipo vendría cada día, qué época le cuadra y desde dónde viaja.
+- Objeciones típicas y sus técnicas: ${objecionPrecio}; cuadrar tres días de agenda, el viaje, «¿y si no puedo una de las fechas?», qué pasa si solo le interesa un área (entonces es una estancia suelta, no el pack).
+- Cómo se cierra AQUÍ: con la decisión de pago (único o 9 cuotas) y 2-3 fechas candidatas para el primer día. El pack sin fechas se enfría.
+- Señales de compra: pregunta por fechas, por quién puede acompañarle, por cómo se paga o por el material que se lleva.`;
+  }
   if (programa === "marpe") {
     return `Ánclate en lo que es ESTE producto (no en el programa de 10 meses ni en la estancia de un día):
 - Lo que se vende son DOS DÍAS en la clínica de Murcia con el Dr. Javier Lozano y su equipo, en grupos de 6 doctores, en los que cada uno COLOCA SU PRIMER MARPE en un paciente real (el paciente lo pone la clínica). El procedimiento es el de CSA; del Prof. Kee-Joon Lee (Seúl, creador del MARPE) se toman las bases biológicas.
@@ -179,6 +197,16 @@ function playbookDe(programa: ProgramaKey | null, objecionPrecio: string): strin
  *  a propósito: así la nota de Fransua, la autoevaluación de Fran y todas las
  *  medias del dashboard siguen siendo comparables entre productos. */
 function baremoDe(programa: ProgramaKey | null): string {
+  if (programa === "pack3") {
+    return `BAREMO. Puntúas la EJECUCIÓN DE FRAN, no lo caliente que viniera el doctor/a: lo que dependa del lead es CONTEXTO y NO sube ni baja la nota.
+Ojo con la escala: es un producto NUEVO (noviembre de 2026) y AÚN NO hay muestra medida — no te inventes tasas ni las tomes del programa de 10 meses. Una llamada bien llevada normal está en 65-80; reserva 85-100 para lo excepcional y baja de 50 solo si hubo fallos claros. NO penalices que Fran hable mucho.
+- CUALIFICACIÓN = saber qué quiere resolver en cada área · 0 no preguntó nada | 40 por encima | 65 sabe qué le preocupa en captación, clínica y gestión | 85 + quién de su equipo vendría cada día y qué época le cuadra | 100 + lo confirmó con sus palabras y ordenó los tres días alrededor de eso.
+- ARGUMENTACIÓN = contar LOS TRES DÍAS ligados a lo suyo · 0 recitó lo que incluye | 40 ventajas genéricas | 65 le contó qué verá cada día | 85 + conectó cada día con una necesidad suya y con lo que se lleva | 100 + un caso real parecido que le hizo proyectarse. ⛔ Si prometió cosas del programa de 10 meses o de la Inmersión, baja la nota y ponlo en "debilidades".
+- OBJECIONES = la agenda de tres días, el viaje, las fechas, el precio · 0 las esquivó | 40 de pasada | 65 bien contestadas | 85 + con concreción y comprobando que quedaba conforme | 100 + destapó la que no decía. Si apenas hubo pegas, deja 65 y dilo en el resumen.
+- CIERRE = pago decidido y fechas en camino · 0 quedó en el aire | 40 «te paso la información» | 65 acordaron la propuesta y volver a hablar | 85 + forma de pago elegida y fechas candidatas del primer día | 100 + salió con el pack apalabrado y la primera fecha propuesta.
+- RAPPORT = claridad y trato · 0 confuso o cortante | 40 correcto pero plano | 65 se entiende y el trato es cómodo | 85 + explica los tres días con claridad y responde a lo que pregunta | 100 + conversación de tú a tú.
+`;
+  }
   if (programa === "marpe") {
     return `BAREMO. Puntúas la EJECUCIÓN DE FRAN, no lo caliente que viniera el doctor/a: lo que dependa del lead (si ya venía decidido, su presupuesto, sus pegas) es CONTEXTO y NO sube ni baja la nota.
 Ojo con la escala: es un producto NUEVO (noviembre de 2026) y AÚN NO hay muestra medida de cuántas llamadas acaban en reserva — no te inventes tasas ni las tomes del programa de 10 meses. Una llamada bien llevada normal está en 65-80; reserva 85-100 para lo excepcional y baja de 50 solo si hubo fallos claros de ejecución. NO penalices que Fran hable mucho.

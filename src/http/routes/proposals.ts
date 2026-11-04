@@ -14,6 +14,7 @@ import type { FastifyInstance } from "fastify";
 import { runJson, suggestModel } from "../../ai/agent";
 import { buildPromptRecepcion, validateRecepcion } from "./proposalsRecepcion";
 import { buildPromptInmersionMarpe, validateInmersionMarpe } from "./proposalsInmersionMarpe";
+import { buildPromptPack3, validatePack3 } from "./proposalsPack3";
 
 const MAX_TRANSCRIPT_CHARS = 100_000;
 
@@ -364,6 +365,18 @@ export function registerProposalRoutes(app: FastifyInstance): void {
     // La INMERSIÓN CLÍNICA MARPE (noviembre de 2026), igual: su plantilla (la de
     // Fran) solo pide lo personal —doctor, lead, 3 necesidades con frase literal y
     // sus dudas—. También antes del ternario, que la mandaría al SBA.
+    // El PACK 3 ESTANCIAS (04-11-2026): plantilla beige de Fran, solo lo personal.
+    if (body.programa === "pack3") {
+      try {
+        const raw = await runJson<Record<string, unknown>>(buildPromptPack3(clipped), suggestModel);
+        const proposal = raw ? validatePack3(raw) : null;
+        if (!proposal) return reply.status(503).send({ ok: false, error: "La IA no pudo extraer un borrador válido. Reintenta." });
+        return { ok: true, proposal };
+      } catch (e) {
+        return reply.status(503).send({ ok: false, error: "IA no disponible: " + (e as Error).message });
+      }
+    }
+
     if (body.programa === "inmersion_marpe") {
       try {
         const raw = await runJson<Record<string, unknown>>(buildPromptInmersionMarpe(clipped), suggestModel);

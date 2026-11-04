@@ -116,7 +116,7 @@ const PROGRAMA_BRIEF: Record<ProgramaKey, { nombre: string; oferta: string }> = 
   // INMERSIÓN EN MARPE (03-11-2026, producto nuevo; mismos datos que
   // dashboard/lib/domain/inmersionMarpe.ts y el catálogo de productos).
   marpe: {
-    nombre: "Inmersión en MARPE (DOS DÍAS presenciales en la clínica de Murcia, 6 doctores por edición, colocan su primer MARPE en paciente real; 1ª edición 4 y 5 de marzo de 2027)",
+    nombre: "Inmersión en MARPE (DOS DÍAS presenciales en la clínica de Murcia, 6 doctores por edición, colocan su primer MARPE en paciente real; 1ª edición 25 y 26 de febrero de 2027, 2ª 20 y 21 de mayo de 2027)",
     oferta: "PRECIO (2.000 € hasta el viernes 27-11-2026 —Black Friday—, 3.000 € desde el sábado 28; se reserva plaza con 400 € por transferencia y la factura va por el total), comidas de los dos días incluidas y hotel no, sin requisito de experiencia previa, cambio de edición hasta 30 días antes y devolución solo por causa mayor",
   },
 };

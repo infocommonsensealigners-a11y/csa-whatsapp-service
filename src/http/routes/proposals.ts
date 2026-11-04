@@ -13,6 +13,7 @@
 import type { FastifyInstance } from "fastify";
 import { runJson, suggestModel } from "../../ai/agent";
 import { buildPromptRecepcion, validateRecepcion } from "./proposalsRecepcion";
+import { buildPromptInmersionMarpe, validateInmersionMarpe } from "./proposalsInmersionMarpe";
 
 const MAX_TRANSCRIPT_CHARS = 100_000;
 
@@ -322,7 +323,8 @@ function validateCleaned(obj: unknown): CleanedTranscript | null {
 
 export function registerProposalRoutes(app: FastifyInstance): void {
   // POST /proposals/extract { transcript, programa } → borrador de contenido para la propuesta
-  // del producto que toque (SBA, Certificación o Estancia clínica suelta).
+  // del producto que toque (SBA, sus planes, Certificación, Estancia clínica suelta,
+  // Recepción o Inmersión Clínica MARPE).
   app.post("/proposals/extract", async (req, reply) => {
     const body = (req.body ?? {}) as { transcript?: unknown; programa?: unknown };
     const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
@@ -352,6 +354,20 @@ export function registerProposalRoutes(app: FastifyInstance): void {
       try {
         const raw = await runJson<Record<string, unknown>>(buildPromptRecepcion(clipped), suggestModel);
         const proposal = raw ? validateRecepcion(raw) : null;
+        if (!proposal) return reply.status(503).send({ ok: false, error: "La IA no pudo extraer un borrador válido. Reintenta." });
+        return { ok: true, proposal };
+      } catch (e) {
+        return reply.status(503).send({ ok: false, error: "IA no disponible: " + (e as Error).message });
+      }
+    }
+
+    // La INMERSIÓN CLÍNICA MARPE (noviembre de 2026), igual: su plantilla (la de
+    // Fran) solo pide lo personal —doctor, lead, 3 necesidades con frase literal y
+    // sus dudas—. También antes del ternario, que la mandaría al SBA.
+    if (body.programa === "inmersion_marpe") {
+      try {
+        const raw = await runJson<Record<string, unknown>>(buildPromptInmersionMarpe(clipped), suggestModel);
+        const proposal = raw ? validateInmersionMarpe(raw) : null;
         if (!proposal) return reply.status(503).send({ ok: false, error: "La IA no pudo extraer un borrador válido. Reintenta." });
         return { ok: true, proposal };
       } catch (e) {

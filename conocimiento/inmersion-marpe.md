@@ -12,7 +12,7 @@ Reglas para leer esto:
 
 - Dos días presenciales en la clínica de Murcia, con el Dr. Javier Lozano y su equipo.
 - Grupos de 6 doctores por edición. Cada uno coloca su primer MARPE en un paciente real; el paciente lo pone la clínica.
-- 1ª edición: 4 y 5 de marzo de 2027. La 2ª está por anunciar. Objetivo: 3 ediciones, 18 plazas.
+- 1ª edición: jueves 25 y viernes 26 de febrero de 2027. 2ª edición: jueves 20 y viernes 21 de mayo de 2027. Objetivo: 3 ediciones, 18 plazas.
 - El procedimiento es el de CSA; del Prof. Kee-Joon Lee (Seúl, creador del MARPE) se toman las bases biológicas.
 - El discurso: el Dr. Lozano y Enrique ya son profesionales del MARPE y aun así siguen formándose en vanguardia (el curso de Seúl).
 
@@ -21,6 +21,7 @@ Reglas para leer esto:
 - Precio de lanzamiento 2.000 € hasta el viernes 27 de noviembre de 2026 (Black Friday). Desde el sábado 28, 3.000 €.
 - Se reserva la plaza con 400 € por transferencia. La factura va SIEMPRE por el total (2.000 €); la reserva es un cobro a cuenta de esa factura.
 - Comidas de los dos días incluidas; el hotel no.
+- Incluye el libro del Método Lozano (escrito por Javier y Enrique), impreso: se entrega en mano en la propia inmersión.
 - No hace falta experiencia previa con miniimplantes ni con MARPE.
 - Cambio de edición hasta 30 días antes; devolución solo por causa mayor.
 

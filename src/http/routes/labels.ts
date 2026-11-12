@@ -10,7 +10,7 @@
  * viaja en `x-csa-user` (lo pone ese proxy) y queda en la auditoría.
  */
 import type { FastifyInstance } from "fastify";
-import { listLabelCatalog, labelsOfChat, resyncLabels, setChatLabel } from "../../wa/labels";
+import { listLabelCatalog, labelsOfChat, rebuildLabels, resyncLabels, setChatLabel } from "../../wa/labels";
 import { jidDeRuta } from "./chats";
 
 export function registerLabelRoutes(app: FastifyInstance): void {
@@ -20,6 +20,14 @@ export function registerLabelRoutes(app: FastifyInstance): void {
   // etiquetas creadas en el móvil después del emparejamiento.
   app.post("/labels/resync", async (_req, reply) => {
     const r = await resyncLabels();
+    if (!r.ok) return reply.status(503).send(r);
+    return r;
+  });
+
+  // Reconstruye el espejo de etiquetas desde la FOTO COMPLETA de WhatsApp
+  // (12-11-2026: ids reutilizados al recrear las listas). Solo lee de WhatsApp.
+  app.post("/labels/rebuild", async (_req, reply) => {
+    const r = await rebuildLabels();
     if (!r.ok) return reply.status(503).send(r);
     return r;
   });

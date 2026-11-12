@@ -94,6 +94,76 @@ export async function resyncLabels(): Promise<{ ok: boolean; error?: string; lab
   return { ok: true, labels: listLabelCatalog().length };
 }
 
+const COLECCIONES = ["regular", "regular_high", "regular_low"] as const;
+
+/**
+ * RECONSTRUIR EL ESPEJO DE ETIQUETAS DESDE CERO (12-11-2026).
+ *
+ * Por qué: al recrear las listas en el móvil (05-11), WhatsApp reutilizó los
+ * ids de etiquetas borradas («19» era «Seguimiento Estancias» y pasó a ser
+ * «WEBINAR GESTIÓN CLÍNICA JAVI»). El espejo conservaba las asociaciones viejas
+ * de esos ids y contaba 213 chats donde el móvil de Fran tiene 174. Un resync
+ * normal solo trae CAMBIOS: no puede saber qué filas sobran.
+ *
+ * Cómo: copia de seguridad de `wa_chat_labels` en una tabla con fecha, se vacía,
+ * se marcan las etiquetas como borradas (las vivas vuelven por `labels.edit`) y
+ * se olvida la versión del estado de la app de las colecciones de etiquetas.
+ * Así WhatsApp devuelve la FOTO COMPLETA y la ingesta de siempre
+ * (`labels.edit` / `labels.association`) rellena el espejo con la verdad.
+ * Solo LEE de WhatsApp: no etiqueta, no envía, no marca nada en el móvil.
+ * Si la petición falla, se restaura la copia tal cual.
+ */
+export async function rebuildLabels(): Promise<{
+  ok: boolean;
+  error?: string;
+  copia?: string;
+  antes?: number;
+  despues?: number;
+  porEtiqueta?: Array<{ id: string; name: string; chats: number }>;
+}> {
+  const sock = getActiveSocket();
+  if (!sock) return { ok: false, error: "WhatsApp no está conectado ahora mismo." };
+  const db = getDb();
+  const sello = new Date().toISOString().replace(/\D/g, "").slice(0, 12);
+  const copia = `wa_chat_labels_copia_${sello}`;
+  const copiaCat = `wa_labels_copia_${sello}`;
+  const antes = (db.prepare("SELECT COUNT(*) AS n FROM wa_chat_labels").get() as { n: number }).n;
+  db.exec(`CREATE TABLE ${copia} AS SELECT * FROM wa_chat_labels; CREATE TABLE ${copiaCat} AS SELECT * FROM wa_labels;`);
+  db.transaction(() => {
+    db.prepare("DELETE FROM wa_chat_labels").run();
+    // Las pseudo-listas del sistema (U+200E delante) no viajan en la foto: se respetan.
+    db.prepare("UPDATE wa_labels SET deleted = 1 WHERE name NOT LIKE '‎%'").run();
+  })();
+  try {
+    const vacio = Object.fromEntries(COLECCIONES.map((c) => [c, null]));
+    await sock.authState.keys.set({ "app-state-sync-version": vacio } as never);
+    await sock.resyncAppState([...COLECCIONES], true);
+    // La ingesta procesa los eventos del búfer de Baileys justo después: margen corto.
+    await new Promise((r) => setTimeout(r, 3000));
+  } catch (e) {
+    const msg = String((e as Error)?.message ?? e).slice(0, 200);
+    console.error("[labels] rebuild falló, restaurando copia:", msg);
+    db.transaction(() => {
+      db.prepare("DELETE FROM wa_chat_labels").run();
+      db.exec(`INSERT OR IGNORE INTO wa_chat_labels SELECT * FROM ${copia}`);
+      db.exec(`DELETE FROM wa_labels; INSERT INTO wa_labels SELECT * FROM ${copiaCat}`);
+    })();
+    emitSse({ type: "labels.updated" });
+    return { ok: false, error: msg, copia };
+  }
+  const despues = (db.prepare("SELECT COUNT(*) AS n FROM wa_chat_labels").get() as { n: number }).n;
+  const porEtiqueta = db
+    .prepare(
+      `SELECT l.id AS id, COALESCE(l.name,'') AS name, COUNT(cl.chat_jid) AS chats
+         FROM wa_labels l LEFT JOIN wa_chat_labels cl ON cl.label_id = l.id
+        WHERE l.deleted = 0 GROUP BY l.id ORDER BY l.name COLLATE NOCASE`
+    )
+    .all() as Array<{ id: string; name: string; chats: number }>;
+  emitSse({ type: "labels.updated" });
+  console.log(`[labels] espejo reconstruido: ${antes} → ${despues} asociaciones (copia en ${copia})`);
+  return { ok: true, copia, antes, despues, porEtiqueta };
+}
+
 function ensureAuditTable(): void {
   getDb().exec(
     `CREATE TABLE IF NOT EXISTS wa_label_audit (
